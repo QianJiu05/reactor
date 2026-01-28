@@ -16,6 +16,8 @@
 
 #include "reactor.h"
 
+#define MAX_EVENTS 10
+
 #define SERVER_PORT 8888
 #define BACKLOG     10
 
@@ -50,10 +52,14 @@ void server_bind(int serverfd, struct sockaddr* server_addr) {
 }
 
 
-void connect_init(struct connect* conn) {
+void connect_init(struct connect* conn, int fd) {
+    conn->fd = fd;
+    conn->rlen = 0;
+    conn->wlen = 0;
     conn->recv_cb = recv_callback;
     conn->send_cb = send_callback;
 }
+
 int main (void) {
 
     int serverfd;
@@ -64,84 +70,54 @@ int main (void) {
 
     server_bind(serverfd, (struct sockaddr *) &server_addr);
     
-    // struct connect channel[10];
-
-
     /* 3.开始监听 */
     if (listen(serverfd, BACKLOG) == -1)
         handle_error("listen");
-    
 
-// #define MAX_EVENTS 10
-//            struct epoll_event ev, events[MAX_EVENTS];
-//            int listen_sock, conn_sock, nfds, epollfd;
-
-//            /* Code to set up listening socket, 'listen_sock',
-//               (socket(), bind(), listen()) omitted */
-
-//            epollfd = epoll_create1(0);
-//            if (epollfd == -1) {
-//                perror("epoll_create1");
-//                exit(EXIT_FAILURE);
-//            }
-
-//            ev.events = EPOLLIN;
-//            ev.data.fd = listen_sock;
-//            if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_sock, &ev) == -1) {
-//                perror("epoll_ctl: listen_sock");
-//                exit(EXIT_FAILURE);
-//            }
-
-//            for (;;) {
-//                nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
-//                if (nfds == -1) {
-//                    perror("epoll_wait");
-//                    exit(EXIT_FAILURE);
-//                }
-//                 for (n = 0; n < nfds; ++n) {
-//                    if (events[n].data.fd == listen_sock) {
-//                        conn_sock = accept(listen_sock,
-//                                           (struct sockaddr *) &addr, &addrlen);
-//                        if (conn_sock == -1) {
-//                            perror("accept");
-//                            exit(EXIT_FAILURE);
-//                        }
-//                        setnonblocking(conn_sock);
-//                        ev.events = EPOLLIN | EPOLLET;
-//                        ev.data.fd = conn_sock;
-//                        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock,
-//                                    &ev) == -1) {
-//                            perror("epoll_ctl: conn_sock");
-//                            exit(EXIT_FAILURE);
-//                        }
-//                    } else {
-//                        do_use_fd(events[n].data.fd);
-//                    }
-//                }
-//            }
-
-    struct connect test;
-    // test = channel_init();
-    // struct epoll_event ev;
-
-
-    // int epfd = epoll_create(1);
-    // epoll_ctl(epfd,EPOLL_CTL_ADD,test.fd,&ev);
-	// while (1)
-	// {
+    struct connect connector[10];
+    struct epoll_event ev;
+    struct epoll_event events[10]; 
 
     int iAddrLen = sizeof(struct sockaddr);
-    test.fd = accept(serverfd, (struct sockaddr *)&server_addr, &iAddrLen);
-    if (-1 != test.fd)
+
+    int epfd = epoll_create(1);
+    ev.events = EPOLLIN;
+    ev.data.fd = serverfd;
+    epoll_ctl(epfd,EPOLL_CTL_ADD,serverfd,&ev);
+
+    // printf("start\n");
+
+    while (1)
     {
-        connect_init(&test);
+        int nready;//就绪了多少个事件
+        nready = epoll_wait(epfd,events,10,-1);
 
-        while (1)
-        {
-            test.recv_cb(&test);
-        }				
+        printf("epollwait:nready = %d\n",nready);
 
-	}
+        for (int i = 0; i < nready; i++) {
+            // if (events.data.fd )
+            printf("gain fd:%d\n",events->data.fd);
+
+            if (serverfd == events[i].data.fd) {
+                /* 建立新连接 */
+                int new_fd = accept(serverfd, (struct sockaddr *)&server_addr, &iAddrLen);
+                if (new_fd == -1) {
+                    printf("get bad new_fd\n");
+                    break;
+                }
+                printf("get new fd:%d\n",new_fd);
+                connect_init(&connector[new_fd],new_fd);
+                ev.events = EPOLLIN;
+                ev.data.fd = new_fd;
+                epoll_ctl(epfd,EPOLL_CTL_ADD,new_fd,&ev);
+            } else {
+                /* events[i].data.fd为已有的fd */
+                struct connect* this = &connector[events[i].data.fd];
+                this->recv_cb(this);
+            }
+        }
+        
+    }	
 
     return 0;
 }
@@ -151,27 +127,26 @@ void handle_error (char* string) {
     printf("err: %s\n",string);
 }
 
-int recv_callback(struct connect* test) {
-    test->rlen = recv(test->fd,test->rbuf,999,0);
-    if (test->rlen <= 0)
+int recv_callback(struct connect* coon) {
+    coon->rlen = recv(coon->fd,coon->rbuf,999,0);
+    if (coon->rlen <= 0)
     {
-        close(test->fd);
+        close(coon->fd);
         return -1;
     }
 
-    test->send_cb(test);
-
-    
+    coon->send_cb(coon);
 }
-int send_callback(struct connect* test) {
-    strncpy(test->wbuf,test->rbuf,test->rlen);
-    test->wlen = test->rlen;
-    // printf("Get Msg: %s\n",  test.wbuf);
 
-    int send_cnt = send(test->fd,test->wbuf,test->wlen,0);
-    test->wlen -= send_cnt;
+int send_callback(struct connect* coon) {
+    strncpy(coon->wbuf,coon->rbuf,coon->rlen);
+    coon->wlen = coon->rlen;
+    printf("Get Msg: %s\n",  coon->wbuf);
 
-    if (test->wlen == 0) {
-        memset(test->wbuf, 0, sizeof(test->wbuf));
+    int send_cnt = send(coon->fd,coon->wbuf,coon->wlen,0);
+    coon->wlen -= send_cnt;
+
+    if (coon->wlen == 0) {
+        memset(coon->wbuf, 0, sizeof(coon->wbuf));
     }
 }
