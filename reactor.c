@@ -14,12 +14,14 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include "reactor.h"
+#include <errno.h>
 
-#define MAX_EVENTS 128
-#define NUM_OF_CONNECTOR 10
+#define MAX_EVENTS 512
+#define NUM_OF_CONNECTOR 128
 #define SERVER_PORT 8888
-#define BACKLOG     10
+#define BACKLOG     100
 
 #define CONNECT_BUF_LEN 128
 
@@ -31,8 +33,13 @@ struct connect{
     char wbuf[CONNECT_BUF_LEN];
     int wlen;
 
+    union recv_func
+    {
+        int (*accept_cb)(struct connect*);
+        int (*recv_cb)(struct connect*);
+    }recv_func;
+    
 
-    int (*recv_cb)(struct connect*);
     int (*send_cb)(struct connect*);
     void (*close)(struct connect*);
 };
@@ -61,23 +68,26 @@ void connect_init(struct connect* conn, int fd) ;
 void set_epoll(int EVENT, int OPERATION, int fd) ;
 
 /* callback */
+int accept_callback(struct connect*);
 int recv_callback(struct connect*);
 int send_callback(struct connect*);
 void close_callback(struct connect*);
 
 int epfd;
+struct sockaddr_in server_addr;
+int iAddrLen = sizeof(struct sockaddr);
+
 struct connect_pool pool;
 
 int main (void) {
 
+
+    printf("pid=%d\n",getpid());
     connect_pool_init();
 
     int serverfd;
     serverfd = server_init(serverfd);
-
-    struct sockaddr_in server_addr;
     set_sockaddr_in(&server_addr);
-
     server_bind(serverfd, (struct sockaddr *) &server_addr);
     
     /* 3.开始监听 */
@@ -87,7 +97,6 @@ int main (void) {
     struct connect connector[NUM_OF_CONNECTOR];
     struct epoll_event events[MAX_EVENTS]; 
 
-    int iAddrLen = sizeof(struct sockaddr);
 
     epfd = epoll_create(1);
     set_epoll(EPOLLIN, EPOLL_CTL_ADD, serverfd);
@@ -95,27 +104,18 @@ int main (void) {
     while (1)
     {
         int nready;//就绪了多少个事件
-        nready = epoll_wait(epfd,events,10,-1);
+        nready = epoll_wait(epfd,events,MAX_EVENTS,-1);
 
         for (int i = 0; i < nready; i++) {
-            // printf("gain fd:%d\n",events->data.fd);
-
             if (serverfd == events[i].data.fd) {
                 /* 建立新连接 */
-                int new_fd = accept(serverfd, (struct sockaddr *)&server_addr, &iAddrLen);
-                if (new_fd == -1) {
-                    printf("get bad new_fd\n");
-                    break;
-                }
-                // printf("get new fd:%d\n",new_fd);
-                struct connect* connector = get_connector(new_fd);
-                connect_init(connector,new_fd);
-                set_epoll(EPOLLIN, EPOLL_CTL_ADD, new_fd);
+                struct connect* this = get_connector(serverfd);
+                this->recv_func.accept_cb(this);
+
             } else {
                 /* events[i].data.fd为已有的fd */
-                // struct connect* this = &connector[events[i].data.fd];
                 struct connect* this = get_connector(events[i].data.fd);
-                this->recv_cb(this);
+                this->recv_func.recv_cb(this);
             }
         }
         
@@ -154,7 +154,7 @@ struct connect_node* get_pool (int num) {
     //比如num=3，num_of_pool=3,
     printf("num =%d, numofpool=%d\n",num,pool.num_of_pool);
     while (num >= pool.num_of_pool) {
-        printf("pool not exist,creating..\n");
+        // printf("pool not exist,creating..\n");
         alloc_new_pool();
     }
 
@@ -174,14 +174,31 @@ struct connect* get_connector(int fd) {
 }
 
 /*************** callback ****************/
+int accept_callback(struct connect* conn) {
+    int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddrLen);
+    if (new_fd == -1) {
+        printf("get bad new_fd\n");
+        return -1;
+    }
+    printf("get new fd:%d\n",new_fd);
+    struct connect* connector = get_connector(new_fd);
+    connect_init(connector,new_fd);
+    set_epoll(EPOLLIN, EPOLL_CTL_ADD, new_fd);
+    return new_fd;
+}
 int recv_callback(struct connect* conn) {
     conn->rlen = recv(conn->fd,conn->rbuf,999,0);
 
-    if (conn->rlen <= 0){
+    if (conn->rlen == 0){
         conn->close(conn);
         return -1;
+    } else if (conn->rlen < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return 0;  // 继续等待
+        }
     }
     conn->send_cb(conn);
+    printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
 }
 
 int send_callback(struct connect* conn) {
@@ -212,6 +229,9 @@ int server_init (int serverfd) {
 		printf("socket error!\n");
 		return -1;
 	}
+    struct connect* connector = get_connector(serverfd);
+    connect_init(connector,serverfd);
+    connector->recv_func.accept_cb = accept_callback;
     return serverfd;
 }
 
@@ -235,9 +255,13 @@ void connect_init(struct connect* conn, int fd) {
     conn->fd = fd;
     conn->rlen = 0;
     conn->wlen = 0;
-    conn->recv_cb = recv_callback;
+    conn->recv_func.recv_cb = recv_callback;
     conn->send_cb = send_callback;
     conn->close = close_callback;
+
+    // 添加：设置为非阻塞模式
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 void set_epoll(int EVENT, int OPERATION, int fd) {
