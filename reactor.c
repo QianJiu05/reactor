@@ -19,6 +19,7 @@
 
 #include "connect_pool.h"
 #include "reactor.h"
+#include "http_handler.h"
 
 #define MAX_EVENTS 2046
 #define SERVER_PORT 8888
@@ -118,11 +119,19 @@ int recv_callback(struct connect* conn) {
 }
 
 int send_callback(struct connect* conn) {
-    strncpy(conn->wbuf,conn->rbuf,conn->rlen);
-    conn->wlen = conn->rlen;
-    // printf("Get Msg: %s\n",  conn->wbuf);
+    // strncpy(conn->wbuf,conn->rbuf,conn->rlen);
+    // conn->wlen = conn->rlen;
+    // // printf("Get Msg: %s\n",  conn->wbuf);
 
-    int send_cnt = send(conn->fd,conn->wbuf,conn->wlen,0);
+    // int send_cnt = send(conn->fd,conn->wbuf,conn->wlen,0);
+    // conn->wlen -= send_cnt;
+
+    // if (conn->wlen == 0) {
+    //     memset(conn->wbuf, 0, sizeof(conn->wbuf));
+    // }
+    conn->wlen = generate_http_response(conn->wbuf, conn->rbuf);
+    
+    int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
     conn->wlen -= send_cnt;
 
     if (conn->wlen == 0) {

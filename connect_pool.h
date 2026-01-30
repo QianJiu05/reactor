@@ -1,6 +1,10 @@
+#ifndef __CONNECT_POOL_H__
+#define __CONNECT_POOL_H__
+
+
 
 #define NUM_OF_CONNECTOR 128
-#define CONNECT_BUF_LEN 128
+#define CONNECT_BUF_LEN 1024
 
 struct connect{
     int fd;
@@ -34,4 +38,5 @@ struct connect_pool{
 void connect_pool_init(struct connect_pool*);
 struct connect* get_connector(int,struct connect_pool*);
 struct connect_node* get_pool (int num, struct connect_pool* pool);
-// struct connect_node* alloc_new_pool(void);/
+
+#endif
