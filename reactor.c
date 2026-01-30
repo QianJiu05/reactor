@@ -186,7 +186,7 @@ int accept_callback(struct connect* conn) {
     return new_fd;
 }
 int recv_callback(struct connect* conn) {
-    conn->rlen = recv(conn->fd,conn->rbuf,999,0);
+    conn->rlen = recv(conn->fd,conn->rbuf,CONNECT_BUF_LEN - 1, 0);
 
     if (conn->rlen == 0){
         conn->close(conn);
@@ -196,6 +196,7 @@ int recv_callback(struct connect* conn) {
             return 0;  // 继续等待
         }
     }
+    conn->rbuf[conn->rlen] = '\0';
     conn->send_cb(conn);
     printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
 }
