@@ -18,10 +18,10 @@
 #include "reactor.h"
 #include <errno.h>
 
-#define MAX_EVENTS 512
+#define MAX_EVENTS 1024
 #define NUM_OF_CONNECTOR 128
 #define SERVER_PORT 8888
-#define BACKLOG     100
+#define BACKLOG     512
 
 #define CONNECT_BUF_LEN 128
 
