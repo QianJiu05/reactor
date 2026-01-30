@@ -15,48 +15,10 @@
 #include <sys/epoll.h>
 #include <stdlib.h>
 #include <fcntl.h>
-#include "reactor.h"
 #include <errno.h>
 
-#define MAX_EVENTS 1024
-#define NUM_OF_CONNECTOR 128
-#define SERVER_PORT 8888
-#define BACKLOG     512
-
-#define CONNECT_BUF_LEN 128
-
-struct connect{
-    int fd;
-
-    char rbuf[CONNECT_BUF_LEN];
-    int rlen;
-    char wbuf[CONNECT_BUF_LEN];
-    int wlen;
-
-    union recv_func
-    {
-        int (*accept_cb)(struct connect*);
-        int (*recv_cb)(struct connect*);
-    }recv_func;
-    
-
-    int (*send_cb)(struct connect*);
-    void (*close)(struct connect*);
-};
-struct connect_node{
-    struct connect pool[NUM_OF_CONNECTOR];
-    struct connect_node* next;
-};
-struct connect_pool{
-    int num_of_pool;
-    struct connect_node* start;
-    struct connect_node* last;
-};
-
-/* structure */
-void connect_pool_init(void);
-struct connect* get_connector(int fd);
-struct connect_node* alloc_new_pool(void);
+#include "connect_pool.h"
+#include "reactor.h"
 
 
 int server_init (int serverfd);
@@ -81,7 +43,7 @@ struct connect_pool pool;
 
 int main (void) {
     // printf("pid=%d\n",getpid());
-    connect_pool_init();
+    connect_pool_init(&pool);
 
     int serverfd;
     serverfd = server_init(serverfd);
@@ -107,12 +69,12 @@ int main (void) {
         for (int i = 0; i < nready; i++) {
             if (serverfd == events[i].data.fd) {
                 /* 建立新连接 */
-                struct connect* this = get_connector(serverfd);
+                struct connect* this = get_connector(serverfd, &pool);
                 // struct connect* this = &connector[serverfd];
                 this->recv_func.accept_cb(this);
             } else {
                 /* events[i].data.fd为已有的fd */
-                struct connect* this = get_connector(events[i].data.fd);
+                struct connect* this = get_connector(events[i].data.fd,&pool);
                 // struct connect* this = &connector[events[i].data.fd];
                 this->recv_func.recv_cb(this);
             }
@@ -123,55 +85,6 @@ int main (void) {
     return 0;
 }
 
-/*************** structure ***************/
-struct connect_node* alloc_new_pool(void) {
-    printf("alloc new pool\n");
-    struct connect_node* new = malloc(sizeof(struct connect_node));
-    if (new == NULL) {
-        printf("alloc new pool err\n");
-        return NULL;
-    }
-    memset(new, 0, sizeof(struct connect_node));
-    if (pool.last != NULL) {
-        pool.last->next = new;
-        pool.last = new;
-    }
-    pool.num_of_pool++;
-    return new;
-}
-
-void connect_pool_init(void) {
-    memset(&pool, 0, sizeof pool);
-
-    pool.start = alloc_new_pool();
-    pool.last = pool.start;
-}
-
-struct connect_node* get_pool (int num) {
-    //num_of_pool是从1开始的,numpool=3:0,1,2
-    // num是从0开始的，1/128 =0
-    //比如num=3，num_of_pool=3,
-    printf("num =%d, numofpool=%d\n",num,pool.num_of_pool);
-    while (num >= pool.num_of_pool) {
-        // printf("pool not exist,creating..\n");
-        alloc_new_pool();
-    }
-
-    struct connect_node* ret = pool.start;
-    for(int i = 0; i < num; i++) {
-        ret = ret->next;
-    }
-    return ret;
-}
-
-struct connect* get_connector(int fd) {
-    //在第几个pool
-    struct connect_node* node = get_pool(fd / NUM_OF_CONNECTOR);
-    //在这个pool的第几个
-    int cnt = fd % NUM_OF_CONNECTOR;
-    return &node->pool[cnt];
-}
-
 /*************** callback ****************/
 int accept_callback(struct connect* conn) {
     int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddrLen);
@@ -180,7 +93,7 @@ int accept_callback(struct connect* conn) {
         return -1;
     }
     printf("get new fd:%d\n",new_fd);
-    struct connect* connector = get_connector(new_fd);
+    struct connect* connector = get_connector(new_fd, &pool);
     connect_init(connector,new_fd);
     set_epoll(EPOLLIN, EPOLL_CTL_ADD, new_fd);
     return new_fd;
@@ -229,7 +142,7 @@ int server_init (int serverfd) {
 		printf("socket error!\n");
 		return -1;
 	}
-    struct connect* connector = get_connector(serverfd);
+    struct connect* connector = get_connector(serverfd, &pool);
     connect_init(connector,serverfd);
     connector->recv_func.accept_cb = accept_callback;
     return serverfd;
