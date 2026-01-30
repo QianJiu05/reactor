@@ -1,8 +1,5 @@
-#define MAX_EVENTS 1024
-#define NUM_OF_CONNECTOR 128
-#define SERVER_PORT 8888
-#define BACKLOG     512
 
+#define NUM_OF_CONNECTOR 128
 #define CONNECT_BUF_LEN 128
 
 struct connect{

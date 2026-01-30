@@ -20,6 +20,9 @@
 #include "connect_pool.h"
 #include "reactor.h"
 
+#define MAX_EVENTS 2046
+#define SERVER_PORT 8888
+#define BACKLOG     2048
 
 int server_init (int serverfd);
 void set_sockaddr_in(struct sockaddr_in* server_addr);
@@ -161,7 +164,6 @@ void server_bind(int serverfd, struct sockaddr* server_addr) {
         printf("bind");
     }
 }
-
 
 /**************** epoll  ****************/
 void connect_init(struct connect* conn, int fd) {

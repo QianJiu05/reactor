@@ -10,7 +10,7 @@
 
 #define SERVER_PORT 8888
 
-#define NUM_OF_THREAD 5000
+#define NUM_OF_THREAD 10000
 static int g_logfd = -1;
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
 void* pfunc (void* arg) {
