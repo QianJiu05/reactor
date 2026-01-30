@@ -80,9 +80,7 @@ int iAddrLen = sizeof(struct sockaddr);
 struct connect_pool pool;
 
 int main (void) {
-
-
-    printf("pid=%d\n",getpid());
+    // printf("pid=%d\n",getpid());
     connect_pool_init();
 
     int serverfd;
@@ -110,11 +108,12 @@ int main (void) {
             if (serverfd == events[i].data.fd) {
                 /* 建立新连接 */
                 struct connect* this = get_connector(serverfd);
+                // struct connect* this = &connector[serverfd];
                 this->recv_func.accept_cb(this);
-
             } else {
                 /* events[i].data.fd为已有的fd */
                 struct connect* this = get_connector(events[i].data.fd);
+                // struct connect* this = &connector[events[i].data.fd];
                 this->recv_func.recv_cb(this);
             }
         }
