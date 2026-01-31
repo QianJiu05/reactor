@@ -14,6 +14,7 @@ struct connect{
     char wbuf[CONNECT_BUF_LEN];
     int wlen;
 
+    int connect_type;     // echo, send, serve
     int file_fd;          // 文件描述符
     off_t remaining;      // 剩余未发送字节数
     int header_sent;      // 是否发送响应头

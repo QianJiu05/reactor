@@ -16,13 +16,16 @@
 
 const char* body_200 = "<html><body>Hello from Reactor!</body></html>";
 const char* body_400 = "<html><body>400 Bad Request</body></html>";
+const char* body_404 = "<html><body>404 Not found</body></html>";
 const char* body_405 = "<html><body>405 Method Not Allowed</body></html>";
 
 
 const char* status_200 = "OK";
 const char* status_400 = "BAD";
+const char* status_404 = "NOTFOUND";
 const char* status_405 = "NOTALLOWED";
 
+int http_send_response(char* response_buf, int status_code);
 
 int http_get_status_code (const char* request_buf) {
     int status_code = 200;
@@ -35,14 +38,12 @@ int http_get_status_code (const char* request_buf) {
     return status_code;
 }
 
-/* 
-        "HTTP/1.1 200 OK\r\n"
+/*      "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
         "Content-Length: 45\r\n"
         "Connection: close\r\n"
         "\r\n"
-        "<html><body>Hello from Reactor!</body></html>";
-*/
+        "<html><body>Hello from Reactor!</body></html>";     */
 int generate_http_response(struct connect* conn) {
 
     char* response_buf = conn->wbuf;
@@ -53,12 +54,13 @@ int generate_http_response(struct connect* conn) {
     
     int fd = open(filepath, O_RDONLY);
     if (fd < 0) {
-        const char* body_404 = "Image not found";
-        return snprintf(response_buf, CONNECT_BUF_LEN,
-            "HTTP/1.1 404 Not Found\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n\r\n%s",
-            strlen(body_404), body_404);
+        printf("open bad fd\n");
+        return http_send_response(response_buf, 404);
+        // return snprintf(response_buf, CONNECT_BUF_LEN,
+        //     "HTTP/1.1 404 Not Found\r\n"
+        //     "Content-Length: %zu\r\n"
+        //     "Connection: close\r\n\r\n%s",
+        //     strlen(body_404), body_404);
     }
 
     // 获取文件大小
@@ -94,46 +96,6 @@ int generate_http_response(struct connect* conn) {
     //         "Content-Length: %zu\r\n\r\n%s",
     //         strlen(body_500), body_500);
     // }
-    // int status_code = http_get_status_code(request_buf);
-    
-    // const char* status_response;
-    // const char* body;
-  
-    // switch (status_code)
-    // {
-    //     case 200 :
-    //         body = body_200;
-    //         status_response = status_200;
-    //         break;
-    //     case 400 :
-    //         body = body_400;
-    //         status_response = status_400;
-    //         break;
-    //     case 405 :
-    //         body = body_405;
-    //         status_response = status_405;
-    //         break;
-    //     default:
-    //         break;
-    // }
-
-    // int body_len = (int)strlen(body);
-
-    // int n = snprintf(
-    //     response_buf,
-    //     CONNECT_BUF_LEN,
-    //     "HTTP/1.1 %d %s\r\n"
-    //     "Content-Type: text/html; charset=utf-8\r\n"
-    //     "Content-Length: %d\r\n"
-    //     "Connection: close\r\n"
-    //     "\r\n"
-    //     "%s",
-    //     status_code,
-    //     status_response,
-    //     body_len,
-    //     body
-    // );
-    // return n;
 }
 
 
@@ -145,17 +107,36 @@ void http_fatal_error(char* message) {
 
 
 /* "HTTP/1.1 200 OK\r\n" */
-// void http_start_response(int fd, int status_code) {
-//   dprintf(fd, "HTTP/1.1 %d %s\r\n", status_code, http_get_response_message(status_code));
-// }
-
-// void http_send_header(int fd, char* key, char* value) { 
-//     dprintf(fd, "%s: %s\r\n", key, value); 
-// }
-// void http_content_type () {
-
-// }
-
-void http_end_headers(int fd) { dprintf(fd, "\r\n"); }
-
-
+int http_send_response(char* response_buf, int status_code) {
+    
+    const char* status_response;
+    const char* body;
+    switch (status_code)
+    {
+        case 200:
+            status_response = status_200;
+            body = body_200; 
+            break;
+        case 400:
+            status_response = status_400;
+            body = body_400;
+            break;
+        case 404:
+            status_response = status_404;
+            body = body_404;
+            break;
+    
+    default:
+      break;
+    }
+    int body_len = strlen(body);
+    int ret = snprintf(response_buf, CONNECT_BUF_LEN,
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        status_code, status_response, body_len, body);
+    return ret;
+}

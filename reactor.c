@@ -78,10 +78,10 @@ int main (void) {
             } else {
                 /* events[i].data.fd为已有的fd */
                 struct connect* this = get_connector(events[i].data.fd,&pool);
-
+                /* 有新msg进入 */
                 if (events[i].events & EPOLLIN) {
                     this->recv_func.recv_cb(this);
-
+                /* wbuf已经发送完，发送新的wbuf */
                 } else if (events[i].events & EPOLLOUT) {
                     this->send_cb(this);
                 }
@@ -93,7 +93,7 @@ int main (void) {
     return 0;
 }
 
-/*************** callback ****************/
+/****************************** callback *******************************/
 int accept_callback(struct connect* conn) {
     int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddrLen);
     if (new_fd == -1) {
@@ -119,7 +119,7 @@ int recv_callback(struct connect* conn) {
     }
     conn->rbuf[conn->rlen] = '\0';
 
-        // 生成 HTTP 响应(初始化 file_fd 和 remaining)
+    // 生成 HTTP 响应(初始化 file_fd 和 remaining)
     generate_http_response(conn);
 
     conn->send_cb(conn);
@@ -142,9 +142,7 @@ int send_callback(struct connect* conn) {
     //     memset(conn->wbuf, 0, sizeof(conn->wbuf));
     // }
 
- // 1. 先发送响应头
-    printf("enter sendcb\n");
-    printf("wlen=%d\n",conn->wlen);
+    // 1. 先发送响应头
     if (conn->wlen > 0) {
         int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
         if (send_cnt < 0) {
@@ -241,7 +239,7 @@ void server_bind(int serverfd, struct sockaddr* server_addr) {
     }
 }
 
-/**************** epoll  ****************/
+/******************************* epoll  *******************************/
 void connect_init(struct connect* conn, int fd) {
     conn->fd = fd;
     conn->rlen = 0;
