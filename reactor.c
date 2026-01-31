@@ -1,5 +1,3 @@
-//gcc -o reactor reactor.c
-
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/socket.h>
@@ -38,6 +36,9 @@ int accept_callback(struct connect*);
 int recv_callback(struct connect*);
 int send_callback(struct connect*);
 void close_callback(struct connect*);
+
+void echo_callback(struct connect* conn);
+
 
 int epfd;
 struct sockaddr_in server_addr;
@@ -106,6 +107,7 @@ int accept_callback(struct connect* conn) {
     set_epoll(EPOLLIN, EPOLL_CTL_ADD, new_fd);
     return new_fd;
 }
+
 int recv_callback(struct connect* conn) {
     conn->rlen = recv(conn->fd,conn->rbuf,CONNECT_BUF_LEN - 1, 0);
 
@@ -125,22 +127,21 @@ int recv_callback(struct connect* conn) {
     conn->send_cb(conn);
     // printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
 }
-// void echo(struct connect* conn) {
-//     strncpy(conn->wbuf,conn->rbuf,conn->rlen);
-//     conn->wlen = conn->rlen;
-// }
+
+void echo_callback(struct connect* conn) {
+    strncpy(conn->wbuf,conn->rbuf,conn->rlen);
+    conn->wlen = conn->rlen;
+    printf("Get Msg: %s\n",  conn->wbuf);
+    int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
+    conn->wlen -= send_cnt;
+
+    if (conn->wlen == 0) {
+        memset(conn->wbuf, 0, sizeof(conn->wbuf));
+    }
+}
 /* send() 在非阻塞模式下可能无法一次发送完所有数据,应该处理部分发送的情况。 */
 int send_callback(struct connect* conn) {
-    // strncpy(conn->wbuf,conn->rbuf,conn->rlen);
-    // conn->wlen = conn->rlen;
-    // printf("Get Msg: %s\n",  conn->wbuf);
-    // echo(conn);
-    // int send_cnt = send(conn->fd,conn->wbuf,conn->wlen,0);
-    // conn->wlen -= send_cnt;
 
-    // if (conn->wlen == 0) {
-    //     memset(conn->wbuf, 0, sizeof(conn->wbuf));
-    // }
 
     // 1. 先发送响应头
     if (conn->wlen > 0) {
@@ -195,14 +196,7 @@ int send_callback(struct connect* conn) {
     conn->close(conn);
     return 0;
 
-    // conn->wlen = generate_http_response(conn->wbuf, conn->rbuf);
-    
-    // int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
-    // conn->wlen -= send_cnt;
 
-    // if (conn->wlen == 0) {
-    //     memset(conn->wbuf, 0, sizeof(conn->wbuf));
-    // }
 }
 
 void close_callback(struct connect* conn) {

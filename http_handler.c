@@ -48,12 +48,18 @@ int http_get_status_code (const char* request_buf) {
         "Content-Length: 45\r\n"
         "Connection: close\r\n"
         "\r\n"
-        "<html><body>Hello from Reactor!</body></html>";     */
+        "<html><body>Hello from Reactor!</body></html>";
+        第一次连接的时候发送响应头     */
 int generate_http_response(struct connect* conn) {
     char* response_buf = conn->wbuf;
     char* request_buf = conn->rbuf;
 
-    // 忽略 request_buf,直接返回图片
+    int status_code = http_get_status_code(conn->rbuf);
+    printf("status code = %d\n",status_code);
+    if (status_code != 200) {
+        return http_write_response(conn, status_code);
+    }
+    // 忽略 request,直接返回图片
     const char* filepath = "resource/featured.jpg";
     
     int fd = open(filepath, O_RDONLY);
@@ -61,6 +67,7 @@ int generate_http_response(struct connect* conn) {
         printf("open bad fd\n");
         return http_write_response(conn, 404);
     }
+
 
     // 获取文件大小
     struct stat st;
@@ -74,13 +81,11 @@ int generate_http_response(struct connect* conn) {
         "Content-Length: %ld\r\n"
         "Connection: close\r\n\r\n",
         file_size);
-
     conn->app.http.file_fd = fd;
     conn->app.http.remain = file_size;
     conn->app.http.header_sent = false;  // 新增标志:响应头是否已发送
     
     return conn->wlen;
-
 }
 
 /* "HTTP/1.1 200 OK\r\n" */
@@ -90,6 +95,7 @@ int http_write_response(struct connect* conn, int status_code) {
     const char* body;
     const char* connection;
     const char* type;
+    
     switch (status_code)
     {
         case 200:
@@ -138,6 +144,6 @@ int http_write_response(struct connect* conn, int status_code) {
         "%s\r\n"                /* type */
         "Content-Length: %d\r\n" "%s\r\n\r\n" /* body_len, connection */
         "%s",                   /* body */
-        status_code, status_response, type, body_len, connection,body);
+        status_code, status_response, type, body_len, connection, body);
     return ret;
 }

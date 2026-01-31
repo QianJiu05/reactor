@@ -12,8 +12,8 @@ struct http_context {
     bool header_sent;
     int status_code;
     int content_type;
-    bool keep_alive; // Connection: close -- Connection: keep-alive
-    char path[256]; //请求路径
+    bool keep_alive;    // Connection: close -- Connection: keep-alive
+    char path[256];     //请求路径
 };
 
 
