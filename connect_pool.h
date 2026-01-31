@@ -1,10 +1,21 @@
 #ifndef __CONNECT_POOL_H__
 #define __CONNECT_POOL_H__
 
-
+#include <stdbool.h>
 
 #define NUM_OF_CONNECTOR 128
 #define CONNECT_BUF_LEN 4096
+
+struct http_context {
+    int file_fd;
+    off_t remain;
+    bool header_sent;
+    int status_code;
+    int content_type;
+    bool keep_alive; // Connection: close -- Connection: keep-alive
+    char path[256]; //请求路径
+};
+
 
 struct connect{
     int fd;
@@ -13,12 +24,6 @@ struct connect{
     int rlen;
     char wbuf[CONNECT_BUF_LEN];
     int wlen;
-
-    int connect_type;     // echo, send, serve
-    int file_fd;          // 文件描述符
-    off_t remaining;      // 剩余未发送字节数
-    int header_sent;      // 是否发送响应头
-
 
     union recv_func
     {
@@ -29,6 +34,11 @@ struct connect{
 
     int (*send_cb)(struct connect*);
     void (*close)(struct connect*);
+
+
+    union {
+        struct http_context http;
+    }app;//应用层内容
 };
 struct connect_node{
     struct connect pool[NUM_OF_CONNECTOR];

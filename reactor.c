@@ -162,9 +162,10 @@ int send_callback(struct connect* conn) {
     }
 
     // 2. 再发送文件内容
-    if (conn->file_fd > 0 && conn->remaining > 0) {
-        int to_read = (conn->remaining < CONNECT_BUF_LEN) ? conn->remaining : CONNECT_BUF_LEN;
-        int bytes_read = read(conn->file_fd, conn->wbuf, to_read);
+    struct http_context* http = &conn->app.http;
+    if (http->file_fd > 0 && http->remain > 0) {
+        int to_read = (http->remain < CONNECT_BUF_LEN) ? http->remain : CONNECT_BUF_LEN;
+        int bytes_read = read(http->file_fd, conn->wbuf, to_read);
         
         if (bytes_read > 0) {
             int send_cnt = send(conn->fd, conn->wbuf, bytes_read, 0);
@@ -176,18 +177,18 @@ int send_callback(struct connect* conn) {
                 conn->close(conn);
                 return -1;
             }
-            conn->remaining -= send_cnt;
+            http->remain -= send_cnt;
             
             // 还有数据,继续监听 EPOLLOUT
-            if (conn->remaining > 0) {
+            if (http->remain > 0) {
                 set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
                 return 0;
             }
         }
         
         // 发送完毕
-        close(conn->file_fd);
-        conn->file_fd = -1;
+        close(http->file_fd);
+        http->file_fd = -1;
     }
 
     // 3. 全部发送完毕,关闭连接
