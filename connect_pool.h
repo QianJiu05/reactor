@@ -4,7 +4,7 @@
 
 
 #define NUM_OF_CONNECTOR 128
-#define CONNECT_BUF_LEN 1024
+#define CONNECT_BUF_LEN 4096
 
 struct connect{
     int fd;
@@ -13,6 +13,11 @@ struct connect{
     int rlen;
     char wbuf[CONNECT_BUF_LEN];
     int wlen;
+
+    int file_fd;          // 文件描述符
+    off_t remaining;      // 剩余未发送字节数
+    int header_sent;      // 是否发送响应头
+
 
     union recv_func
     {

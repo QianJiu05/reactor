@@ -63,7 +63,7 @@ int main (void) {
 
 
     epfd = epoll_create(1);
-    set_epoll(EPOLLIN, EPOLL_CTL_ADD, serverfd);
+    set_epoll(EPOLLIN | EPOLLOUT, EPOLL_CTL_ADD, serverfd);
 
     while (1)
     {
@@ -74,13 +74,17 @@ int main (void) {
             if (serverfd == events[i].data.fd) {
                 /* 建立新连接 */
                 struct connect* this = get_connector(serverfd, &pool);
-                // struct connect* this = &connector[serverfd];
                 this->recv_func.accept_cb(this);
             } else {
                 /* events[i].data.fd为已有的fd */
                 struct connect* this = get_connector(events[i].data.fd,&pool);
-                // struct connect* this = &connector[events[i].data.fd];
-                this->recv_func.recv_cb(this);
+
+                if (events[i].events & EPOLLIN) {
+                    this->recv_func.recv_cb(this);
+
+                } else if (events[i].events & EPOLLOUT) {
+                    this->send_cb(this);
+                }
             }
         }
         
@@ -114,29 +118,92 @@ int recv_callback(struct connect* conn) {
         }
     }
     conn->rbuf[conn->rlen] = '\0';
-    conn->send_cb(conn);
-    printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
-}
 
+        // 生成 HTTP 响应(初始化 file_fd 和 remaining)
+    generate_http_response(conn);
+
+    conn->send_cb(conn);
+    // printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
+}
+// void echo(struct connect* conn) {
+//     strncpy(conn->wbuf,conn->rbuf,conn->rlen);
+//     conn->wlen = conn->rlen;
+// }
+/* send() 在非阻塞模式下可能无法一次发送完所有数据,应该处理部分发送的情况。 */
 int send_callback(struct connect* conn) {
     // strncpy(conn->wbuf,conn->rbuf,conn->rlen);
     // conn->wlen = conn->rlen;
-    // // printf("Get Msg: %s\n",  conn->wbuf);
-
+    // printf("Get Msg: %s\n",  conn->wbuf);
+    // echo(conn);
     // int send_cnt = send(conn->fd,conn->wbuf,conn->wlen,0);
     // conn->wlen -= send_cnt;
 
     // if (conn->wlen == 0) {
     //     memset(conn->wbuf, 0, sizeof(conn->wbuf));
     // }
-    conn->wlen = generate_http_response(conn->wbuf, conn->rbuf);
-    
-    int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
-    conn->wlen -= send_cnt;
 
-    if (conn->wlen == 0) {
-        memset(conn->wbuf, 0, sizeof(conn->wbuf));
+ // 1. 先发送响应头
+    printf("enter sendcb\n");
+    printf("wlen=%d\n",conn->wlen);
+    if (conn->wlen > 0) {
+        int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
+        if (send_cnt < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                return 0;
+            }
+            conn->close(conn);
+            return -1;
+        }
+        conn->wlen -= send_cnt;
+        if (conn->wlen > 0) {
+            memmove(conn->wbuf, conn->wbuf + send_cnt, conn->wlen);
+            set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+            return 0;
+        }
     }
+
+    // 2. 再发送文件内容
+    if (conn->file_fd > 0 && conn->remaining > 0) {
+        int to_read = (conn->remaining < CONNECT_BUF_LEN) ? conn->remaining : CONNECT_BUF_LEN;
+        int bytes_read = read(conn->file_fd, conn->wbuf, to_read);
+        
+        if (bytes_read > 0) {
+            int send_cnt = send(conn->fd, conn->wbuf, bytes_read, 0);
+            if (send_cnt < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                    return 0;
+                }
+                conn->close(conn);
+                return -1;
+            }
+            conn->remaining -= send_cnt;
+            
+            // 还有数据,继续监听 EPOLLOUT
+            if (conn->remaining > 0) {
+                set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                return 0;
+            }
+        }
+        
+        // 发送完毕
+        close(conn->file_fd);
+        conn->file_fd = -1;
+    }
+
+    // 3. 全部发送完毕,关闭连接
+    conn->close(conn);
+    return 0;
+
+    // conn->wlen = generate_http_response(conn->wbuf, conn->rbuf);
+    
+    // int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
+    // conn->wlen -= send_cnt;
+
+    // if (conn->wlen == 0) {
+    //     memset(conn->wbuf, 0, sizeof(conn->wbuf));
+    // }
 }
 
 void close_callback(struct connect* conn) {
