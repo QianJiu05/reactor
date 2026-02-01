@@ -55,6 +55,7 @@ int http_get_status_code (const char* request_buf) {
 int generate_http_response(struct connect* conn) {
     char* response_buf = conn->wbuf;
     char* request_buf = conn->rbuf;
+    // printf("HTTPMSG:\n%s\n",request_buf);
 
     int status_code = http_get_status_code(conn->rbuf);
     printf("status code = %d\n",status_code);
@@ -81,7 +82,8 @@ int generate_http_response(struct connect* conn) {
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: image/jpeg\r\n"
         "Content-Length: %ld\r\n"
-        "Connection: close\r\n\r\n",
+        // "Connection: close\r\n\r\n",
+        "Connection: keep-alive\r\n\r\n",
         file_size);
     conn->app.http.file_fd = fd;
     conn->app.http.remain = file_size;
@@ -144,7 +146,8 @@ int http_response_status(struct connect* conn, int status_code) {
     int ret = snprintf(conn->wbuf, CONNECT_BUF_LEN,
         "HTTP/1.1 %d %s\r\n"    /* status_code, status_response */
         "%s\r\n"                /* type */
-        "Content-Length: %d\r\n" "%s\r\n\r\n" /* body_len, connection */
+        "Content-Length: %d\r\n" /* body_len,  */
+        "%s\r\n\r\n"            /* connection */
         "%s",                   /* body */
         status_code, status_response, type, body_len, connection, body);
     return ret;
@@ -174,7 +177,7 @@ int http_callback(struct connect* conn) {
 
     // 2. 再发送文件内容
     struct http_context* http = &conn->app.http;
-    if (http->file_fd > 0 && http->remain > 0) {
+    if (http->file_fd >= 0 && http->remain > 0) {
         int to_read = (http->remain < CONNECT_BUF_LEN) ? http->remain : CONNECT_BUF_LEN;
         int bytes_read = read(http->file_fd, conn->wbuf, to_read);
         
@@ -204,5 +207,7 @@ int http_callback(struct connect* conn) {
 
     // 3. 全部发送完毕,关闭连接
     conn->close(conn);
+    // conn->serve_type = SERVE_NOT_INIT;
+
     return 0;
 }

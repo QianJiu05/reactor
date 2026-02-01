@@ -18,6 +18,7 @@
 #include "connect_pool.h"
 #include "reactor.h"
 #include "http_handler.h"
+#include "get_resource.h"
 
 #define MAX_EVENTS 2046
 #define SERVER_PORT 8888
@@ -45,6 +46,8 @@ struct sockaddr_in server_addr;
 int iAddrLen = sizeof(struct sockaddr);
 
 struct connect_pool pool;
+
+char resource_buf[1024*1024];
 
 int main (void) {
     // printf("pid=%d\n",getpid());
@@ -98,6 +101,22 @@ int main (void) {
 }
 
 /****************************** callback *******************************/
+int parse_serve_type(struct connect* conn) {
+    int type = SERVE_ECHO;
+    char* rbuf = conn->rbuf;
+
+    if (rbuf == NULL || rbuf[0] == '\0') {
+        type = SERVE_ECHO;
+    } else if (strncmp(rbuf, "GET ", 4) == 0) {
+        type = SERVE_HTTP;
+    } else if (strncmp(rbuf, "SEND ", 5) == 0) {
+        type = SERVE_GET_RESOURCE;
+    } else {
+        type = SERVE_ECHO;
+    }
+    return type;
+}
+
 int accept_callback(struct connect* conn) {
     int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddrLen);
     if (new_fd == -1) {
@@ -111,59 +130,50 @@ int accept_callback(struct connect* conn) {
     return new_fd;
 }
 
-int parse_serve_type(struct connect* conn) {
-    int type = SERVE_ECHO;
-    char* rbuf = conn->rbuf;
-
-    if (rbuf == NULL || rbuf[0] == '\0') {
-        type = SERVE_HTTP;
-    } else if (strncmp(rbuf, "GET ", 4) == 0) {
-        type = SERVE_HTTP;
-    } else if (strncmp(rbuf, "SEND ", 5) == 0) {
-        type = SERVE_GET_BUF;
-    } else {
-        type = SERVE_ECHO;
-    }
-    return type;
-}
 
 int recv_callback(struct connect* conn) {
     conn->rlen = recv(conn->fd,conn->rbuf,CONNECT_BUF_LEN - 1, 0);
 
+    /* rlen == 0 表示对端正常关闭，应直接 close，不要看 errno。
+        只有 rlen < 0 才检查 errno == EAGAIN/EWOULDBLOCK。 */
     if (conn->rlen == 0){
         conn->close(conn);
         return -1;
     } else if (conn->rlen < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0;  // 继续等待
+        } else {
+            conn->close(conn);
+            return -1;
         }
     }
+
     conn->rbuf[conn->rlen] = '\0';
 
+    if (conn->serve_type == SERVE_NOT_INIT || conn->serve_type == SERVE_HTTP) {
     // 解析rlen，GET-->HTTP/ SEND-->recv from cam/ echo
     // 生成 HTTP 响应(初始化 file_fd 和 remaining)
-    int serve_type = parse_serve_type(conn);
-
-    //要写进conn结构体吗
-
-    switch(serve_type) {
-        case SERVE_HTTP:
-            generate_http_response(conn);
-            conn->send_cb = http_callback;
-            break;
-
-        case SERVE_GET_BUF:
-            conn->send_cb = echo_callback;
-            break;
-        case SERVE_ECHO:
-            conn->send_cb = echo_callback;
-            break;
-        default:
-            printf("err serve type\n");
-    }
+        int serve_type = parse_serve_type(conn);
+        conn->serve_type = serve_type;
+        switch(conn->serve_type) {
+            case SERVE_HTTP:
+                generate_http_response(conn);
+                conn->send_cb = http_callback;
+                break;
     
-
+            case SERVE_GET_RESOURCE:
+                handle_resource(conn);
+                conn->send_cb = get_resource_callback;
+                break;
+            case SERVE_ECHO:
+                conn->send_cb = echo_callback;
+                break;
+            default:
+                printf("err serve type\n");
+        }
+    }
     conn->send_cb(conn);
+    return 0;
     // printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
 }
 
@@ -181,15 +191,19 @@ int echo_callback(struct connect* conn) {
 }
 
 /* send() 在非阻塞模式下可能无法一次发送完所有数据,应该处理部分发送的情况。 */
-int send_callback(struct connect* conn) {
-    return http_callback(conn);
-}
+// int send_callback(struct connect* conn) {
+//     return http_callback(conn);
+// }
 
 void close_callback(struct connect* conn) {
     printf("close fd:%d\n",conn->fd);
     set_epoll(0, EPOLL_CTL_DEL,conn->fd);
     close(conn->fd);
+    memset(conn, 0, sizeof(struct connect));
 }
+
+
+/******************************* 初始化  *******************************/
 
 /* 1.创建socket   AF_INET -> 允许远程通信
                  SOCK_STREAM -> TCP协议  */
@@ -226,8 +240,9 @@ void connect_init(struct connect* conn, int fd) {
     conn->rlen = 0;
     conn->wlen = 0;
     conn->recv_func.recv_cb = recv_callback;
-    conn->send_cb = send_callback;
+    // conn->send_cb = send_callback;-->在recv_cb中解析
     conn->close = close_callback;
+    conn->serve_type = SERVE_NOT_INIT;
 
     // 添加：设置为非阻塞模式
     int flags = fcntl(fd, F_GETFL, 0);

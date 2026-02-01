@@ -25,16 +25,15 @@ struct connect{
     char wbuf[CONNECT_BUF_LEN];
     int wlen;
 
+    int serve_type;
+
     union recv_func
     {
         int (*accept_cb)(struct connect*);
         int (*recv_cb)(struct connect*);
     }recv_func;
-    
-
     int (*send_cb)(struct connect*);
     void (*close)(struct connect*);
-
 
     union {
         struct http_context http;

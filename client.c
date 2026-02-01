@@ -10,9 +10,13 @@
 
 #define SERVER_PORT 8888
 
-#define NUM_OF_THREAD 10000
+#define NUM_OF_THREAD 1
 static int g_logfd = -1;
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
+
+char resource_buf[1024];
+
+
 void* pfunc (void* arg) {
     int cfd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -28,10 +32,13 @@ void* pfunc (void* arg) {
     }else {
         // printf("pthread create ok,cfd = %d\n",cfd);
         char buf[128];
+        memset(resource_buf, '1', 1024);
 
-        strncpy(buf,"hello!",strlen("hello!"));
+        strncpy(buf,"SEND ",strlen("SEND "));
         send(cfd,buf,strlen(buf),0);
 
+        
+        
         // recv(cfd,buf,128,0);
         //recv 只读一次时，如果数据还没到就会阻塞，但有可能被信号中断或返回 0。
         //你应当检查返回值，并在读到数据后再退出。
@@ -44,9 +51,12 @@ void* pfunc (void* arg) {
                 dprintf(g_logfd,"recv:%s,cfd:%d\n",buf,cfd);
                 pthread_mutex_unlock(&g_log_lock);
             } else {
+                printf("ok\n");
                 break;
             }
         }
+        send(cfd,resource_buf,1024,0);
+
     }
     return NULL;
 }
