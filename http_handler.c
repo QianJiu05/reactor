@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -8,8 +7,10 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 
 #include "http_handler.h"
+#include "reactor.h"
 
 #define LIBHTTP_REQUEST_MAX_SIZE CONNECT_BUF_LEN
 
@@ -30,16 +31,17 @@ const char* type_no_need        = " ";
 const char* type_image_jpg      = "Content-Type: image/jpeg";
 const char* type_text_html      = "Content-Type: text/html; charset=utf-8";
 
-int http_write_response(struct connect* conn, int status_code);
+int http_response_status(struct connect* conn, int status_code);
 
 int http_get_status_code (const char* request_buf) {
     int status_code = 200;
 
     if (request_buf == NULL || request_buf[0] == '\0') {
         status_code = 400;
-    } else if (strncmp(request_buf, "GET ", 4) != 0) {
-        status_code = 405;
-    }
+    } 
+    // else if (strncmp(request_buf, "GET ", 4) != 0) {
+    //     status_code = 405;
+    // }
     return status_code;
 }
 
@@ -57,7 +59,7 @@ int generate_http_response(struct connect* conn) {
     int status_code = http_get_status_code(conn->rbuf);
     printf("status code = %d\n",status_code);
     if (status_code != 200) {
-        return http_write_response(conn, status_code);
+        return http_response_status(conn, status_code);
     }
     // 忽略 request,直接返回图片
     const char* filepath = "resource/featured.jpg";
@@ -65,7 +67,7 @@ int generate_http_response(struct connect* conn) {
     int fd = open(filepath, O_RDONLY);
     if (fd < 0) {
         printf("open bad fd\n");
-        return http_write_response(conn, 404);
+        return http_response_status(conn, 404);
     }
 
 
@@ -89,7 +91,7 @@ int generate_http_response(struct connect* conn) {
 }
 
 /* "HTTP/1.1 200 OK\r\n" */
-int http_write_response(struct connect* conn, int status_code) {
+int http_response_status(struct connect* conn, int status_code) {
     
     const char* status_response;
     const char* body;
@@ -146,4 +148,61 @@ int http_write_response(struct connect* conn, int status_code) {
         "%s",                   /* body */
         status_code, status_response, type, body_len, connection, body);
     return ret;
+}
+
+
+int http_callback(struct connect* conn) {
+    // 1. 先发送响应头
+    if (conn->wlen > 0) {
+        int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
+        if (send_cnt < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                return 0;
+            }
+            conn->close(conn);
+            return -1;
+        }
+        conn->wlen -= send_cnt;
+        /* 缓冲区还没发完，触发EPOLL_OUT表示本次发送发完了，等下次epoll事件触发发下一段内容 */
+        if (conn->wlen > 0) {
+            memmove(conn->wbuf, conn->wbuf + send_cnt, conn->wlen);
+            set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+            return 0;
+        }
+    }
+
+    // 2. 再发送文件内容
+    struct http_context* http = &conn->app.http;
+    if (http->file_fd > 0 && http->remain > 0) {
+        int to_read = (http->remain < CONNECT_BUF_LEN) ? http->remain : CONNECT_BUF_LEN;
+        int bytes_read = read(http->file_fd, conn->wbuf, to_read);
+        
+        if (bytes_read > 0) {
+            int send_cnt = send(conn->fd, conn->wbuf, bytes_read, 0);
+            if (send_cnt < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                    return 0;
+                }
+                conn->close(conn);
+                return -1;
+            }
+            http->remain -= send_cnt;
+            
+            // 还有数据,继续监听 EPOLLOUT
+            if (http->remain > 0) {
+                set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                return 0;
+            }
+        }
+        
+        // 发送完毕
+        close(http->file_fd);
+        http->file_fd = -1;
+    }
+
+    // 3. 全部发送完毕,关闭连接
+    conn->close(conn);
+    return 0;
 }

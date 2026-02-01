@@ -10,4 +10,5 @@
 
 int generate_http_response(struct connect* conn);
 
+int http_callback(struct connect* conn);
 #endif

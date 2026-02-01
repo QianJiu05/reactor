@@ -37,7 +37,7 @@ int recv_callback(struct connect*);
 int send_callback(struct connect*);
 void close_callback(struct connect*);
 
-void echo_callback(struct connect* conn);
+int echo_callback(struct connect* conn);
 
 
 int epfd;
@@ -76,12 +76,15 @@ int main (void) {
                 /* 建立新连接 */
                 struct connect* this = get_connector(serverfd, &pool);
                 this->recv_func.accept_cb(this);
+
             } else {
                 /* events[i].data.fd为已有的fd */
                 struct connect* this = get_connector(events[i].data.fd,&pool);
+
                 /* 有新msg进入 */
                 if (events[i].events & EPOLLIN) {
                     this->recv_func.recv_cb(this);
+
                 /* wbuf已经发送完，发送新的wbuf */
                 } else if (events[i].events & EPOLLOUT) {
                     this->send_cb(this);
@@ -103,9 +106,25 @@ int accept_callback(struct connect* conn) {
     }
     printf("get new fd:%d\n",new_fd);
     struct connect* connector = get_connector(new_fd, &pool);
-    connect_init(connector,new_fd);
+    connect_init(connector, new_fd);
     set_epoll(EPOLLIN, EPOLL_CTL_ADD, new_fd);
     return new_fd;
+}
+
+int parse_serve_type(struct connect* conn) {
+    int type = SERVE_ECHO;
+    char* rbuf = conn->rbuf;
+
+    if (rbuf == NULL || rbuf[0] == '\0') {
+        type = SERVE_HTTP;
+    } else if (strncmp(rbuf, "GET ", 4) == 0) {
+        type = SERVE_HTTP;
+    } else if (strncmp(rbuf, "SEND ", 5) == 0) {
+        type = SERVE_GET_BUF;
+    } else {
+        type = SERVE_ECHO;
+    }
+    return type;
 }
 
 int recv_callback(struct connect* conn) {
@@ -121,14 +140,34 @@ int recv_callback(struct connect* conn) {
     }
     conn->rbuf[conn->rlen] = '\0';
 
+    // 解析rlen，GET-->HTTP/ SEND-->recv from cam/ echo
     // 生成 HTTP 响应(初始化 file_fd 和 remaining)
-    generate_http_response(conn);
+    int serve_type = parse_serve_type(conn);
+
+    //要写进conn结构体吗
+
+    switch(serve_type) {
+        case SERVE_HTTP:
+            generate_http_response(conn);
+            conn->send_cb = http_callback;
+            break;
+
+        case SERVE_GET_BUF:
+            conn->send_cb = echo_callback;
+            break;
+        case SERVE_ECHO:
+            conn->send_cb = echo_callback;
+            break;
+        default:
+            printf("err serve type\n");
+    }
+    
 
     conn->send_cb(conn);
     // printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
 }
 
-void echo_callback(struct connect* conn) {
+int echo_callback(struct connect* conn) {
     strncpy(conn->wbuf,conn->rbuf,conn->rlen);
     conn->wlen = conn->rlen;
     printf("Get Msg: %s\n",  conn->wbuf);
@@ -138,65 +177,12 @@ void echo_callback(struct connect* conn) {
     if (conn->wlen == 0) {
         memset(conn->wbuf, 0, sizeof(conn->wbuf));
     }
+    return conn->wlen;
 }
+
 /* send() 在非阻塞模式下可能无法一次发送完所有数据,应该处理部分发送的情况。 */
 int send_callback(struct connect* conn) {
-
-
-    // 1. 先发送响应头
-    if (conn->wlen > 0) {
-        int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
-        if (send_cnt < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-                return 0;
-            }
-            conn->close(conn);
-            return -1;
-        }
-        conn->wlen -= send_cnt;
-        if (conn->wlen > 0) {
-            memmove(conn->wbuf, conn->wbuf + send_cnt, conn->wlen);
-            set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-            return 0;
-        }
-    }
-
-    // 2. 再发送文件内容
-    struct http_context* http = &conn->app.http;
-    if (http->file_fd > 0 && http->remain > 0) {
-        int to_read = (http->remain < CONNECT_BUF_LEN) ? http->remain : CONNECT_BUF_LEN;
-        int bytes_read = read(http->file_fd, conn->wbuf, to_read);
-        
-        if (bytes_read > 0) {
-            int send_cnt = send(conn->fd, conn->wbuf, bytes_read, 0);
-            if (send_cnt < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-                    return 0;
-                }
-                conn->close(conn);
-                return -1;
-            }
-            http->remain -= send_cnt;
-            
-            // 还有数据,继续监听 EPOLLOUT
-            if (http->remain > 0) {
-                set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-                return 0;
-            }
-        }
-        
-        // 发送完毕
-        close(http->file_fd);
-        http->file_fd = -1;
-    }
-
-    // 3. 全部发送完毕,关闭连接
-    conn->close(conn);
-    return 0;
-
-
+    return http_callback(conn);
 }
 
 void close_callback(struct connect* conn) {
