@@ -16,7 +16,7 @@
 #include "connect_pool.h"
 #include "reactor.h"
 #include "http_handler.h"
-#include "resource_handler.h"
+#include "recv_resource.h"
 #include "server_init.h"
 
 
@@ -115,7 +115,9 @@ int accept_callback(struct connect* conn) {
 }
 
 int recv_callback(struct connect* conn) {
-    conn->rlen = recv(conn->fd,conn->rbuf,CONNECT_BUF_LEN - 1, 0);
+    /* 把数据接收到rbuf */
+    int to_copy = CONNECT_BUF_LEN - conn->rlen;
+    conn->rlen += recv(conn->fd, conn->rbuf + conn->rlen , to_copy, 0);
 
     /* rlen == 0 表示对端正常关闭，应直接 close，不要看 errno。
         只有 rlen < 0 才检查 errno == EAGAIN/EWOULDBLOCK。 */
@@ -164,7 +166,7 @@ int recv_callback(struct connect* conn) {
 }
 
 int echo_callback(struct connect* conn) {
-    strncpy(conn->wbuf,conn->rbuf,conn->rlen);
+    strncpy(conn->wbuf, conn->rbuf, conn->rlen);
     conn->wlen = conn->rlen;
     printf("%d Get Msg: %s\n", conn->fd, conn->wbuf);
     int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
@@ -212,7 +214,7 @@ void set_epoll(int EVENT, int OPERATION, int fd) {
     struct epoll_event ev;
 
     if (EVENT != 0) { ev.events = EVENT;}
-
     ev.data.fd = fd;
+
     epoll_ctl(epfd, OPERATION, fd, &ev);
 }

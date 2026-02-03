@@ -16,9 +16,10 @@
 
 #define LIBHTTP_REQUEST_MAX_SIZE CONNECT_BUF_LEN
 
-
-
 int http_response_status(struct connect* conn, int status_code);
+
+static void init_send_chunk(struct connect* conn);
+
 
 int http_get_status_code (const char* request_buf) {
     int status_code = 200;
@@ -52,13 +53,7 @@ int generate_http_response(struct connect* conn) {
         "Connection: keep-alive\r\n\r\n"
         // file_size
     );
-    // conn->app.http.file_fd = fd;
-    // conn->app.http.remain = file_size;
-    // conn->app.http.header_sent = false;  // 新增标志:响应头是否已发送
-
-            conn->app.http.file_fd = -1;  // 标记为不从文件读取
-        conn->app.http.remain = -1;   // 表示大小未知
-        conn->app.http.header_sent = false;
+    init_send_chunk(conn);
     
     printf("=====HTTP RESPONSE====\n");
     printf("%s",conn->wbuf);
@@ -118,18 +113,17 @@ int http_response_status(struct connect* conn, int status_code) {
 
     int body_len = strlen(body);
     int ret = snprintf(conn->wbuf, CONNECT_BUF_LEN,
-        "HTTP/1.1 %d %s\r\n"    /* status_code, status_response */
-        "%s\r\n"                /* type */
-        "Content-Length: %d\r\n" /* body_len,  */
-        "%s\r\n\r\n"            /* connection */
-        "%s",                   /* body */
-        status_code, status_response, type, body_len, connection, body);
+                    "HTTP/1.1 %d %s\r\n"    /* status_code, status_response */
+                    "%s\r\n"                /* type */
+                    "Content-Length: %d\r\n" /* body_len,  */
+                    "%s\r\n\r\n"            /* connection */
+                    "%s",                   /* body */
+                    status_code, status_response, type, body_len, connection, body);
     return ret;
 }
 
-
 int http_callback(struct connect* conn) {
-    // 1. 先发送响应头
+    /* 1. 先发送响应头 */
     if (conn->app.http.header_sent == false) {
         printf("send response header\n");
         if (conn->wlen > 0) {
@@ -161,15 +155,15 @@ int http_callback(struct connect* conn) {
 
     }
 
-    // 2. 再发送文件内容
+    /* 2. 发送文件内容 */
     struct http_context* http = &conn->app.http;
+    /* 普通模式：读取file_fd然后发送 */
     if (http->file_fd >= 0 && http->remain > 0) {
         int to_read = (http->remain < CONNECT_BUF_LEN) ? http->remain : CONNECT_BUF_LEN;
         int bytes_read = read(http->file_fd, conn->wbuf, to_read);
         
         if (bytes_read > 0) {
             int send_cnt = send(conn->fd, conn->wbuf, bytes_read, 0);
-            // printf("sending pic...\n");
             if (send_cnt < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
@@ -192,76 +186,65 @@ int http_callback(struct connect* conn) {
         http->file_fd = -1;
     }
 
-        // 3. 如果是 chunked 模式且有数据在 wbuf，发送 chunk
+    /* 
+        如果是 chunked 模式且有数据在 wbuf，发送 chunk 
+        chunk 格式: <size-in-hex>\r\n<data>\r\n
+    */
     if (http->remain == -1 && conn->wlen > 0) {
-        // 发送 chunk 格式: <size-in-hex>\r\n<data>\r\n
-        // char chunk_header[32];
-        // int header_len = snprintf(chunk_header, sizeof(chunk_header), 
-        //                           "%x\r\n", conn->wlen);
-        char chunk_buf[CONNECT_BUF_LEN + 64];  // 额外空间用于 chunk 头尾
-        int chunk_header_len = snprintf(chunk_buf, 64, "%x\r\n", conn->wlen);
-        // 复制数据
-        memcpy(chunk_buf + chunk_header_len, conn->wbuf, conn->wlen);
-        
-        // 添加 chunk 结尾
-        memcpy(chunk_buf + chunk_header_len + conn->wlen, "\r\n", 2);
-        
-        int total_len = chunk_header_len + conn->wlen + 2;
-        
-        // 发送整个 chunk
-        int sent = 0;
-        while (sent < total_len) {
-            int send_cnt = send(conn->fd, chunk_buf + sent, total_len - sent, 0);
-            if (send_cnt < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    // 保存未发送的数据
-                    if (sent < chunk_header_len + conn->wlen) {
-                        int remaining = conn->wlen - (sent - chunk_header_len);
-                        if (remaining > 0) {
-                            memmove(conn->wbuf, conn->wbuf + conn->wlen - remaining, remaining);
-                            conn->wlen = remaining;
+        printf("chunk mode\n");
+
+        if (conn->wlen > 0) {
+            char chunk_buf[CONNECT_BUF_LEN + 64];  // 额外空间用于 chunk 头尾
+            int chunk_header_len = snprintf(chunk_buf, 64, "%x\r\n", conn->wlen);
+            // 复制数据
+            memcpy(chunk_buf + chunk_header_len, conn->wbuf, conn->wlen);
+            
+            // 添加 chunk 结尾
+            memcpy(chunk_buf + chunk_header_len + conn->wlen, "\r\n", 2);
+            
+            int total_len = chunk_header_len + conn->wlen + 2;
+            
+            // 发送整个 chunk
+            int sent = 0;
+            while (sent < total_len) {
+                int send_cnt = send(conn->fd, chunk_buf + sent, total_len - sent, 0);
+                if (send_cnt < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        // 保存未发送的数据
+                        if (sent < chunk_header_len + conn->wlen) {
+                            int remaining = conn->wlen - (sent - chunk_header_len);
+                            if (remaining > 0) {
+                                memmove(conn->wbuf, conn->wbuf + conn->wlen - remaining, remaining);
+                                conn->wlen = remaining;
+                            }
+                        } else {
+                            conn->wlen = 0;
                         }
-                    } else {
-                        conn->wlen = 0;
+                        set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                        return 0;
                     }
-                    set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-                    return 0;
+                    perror("send chunk");
+                    conn->close(conn);
+                    return -1;
                 }
-                perror("send chunk");
-                conn->close(conn);
-                return -1;
+                sent += send_cnt;
             }
-            sent += send_cnt;
+            conn->wlen = 0;
+            memset(conn->wbuf, 0, CONNECT_BUF_LEN);
         }
         
-        printf("Sent chunk: %d bytes to fd:%d\n", conn->wlen, conn->fd);
-        conn->wlen = 0;
+        // printf("Sent chunk: %d bytes to fd:%d\n", conn->wlen, conn->fd);
+        if (conn->rlen > 0) {
+            printf("copy rbuf-->wbuf\n");
+            memcpy(conn->wbuf, conn->rbuf, conn->rlen);
+            memset(conn->rbuf, 0, conn->rlen);
+            conn->wlen += conn->rlen;
+            conn->rlen = 0;
+        }
         
-        // 继续等待更多数据
+        // 等待更多数据
         set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
         return 0;
-        // // 先发送 chunk 大小
-        // send(conn->fd, chunk_header, header_len, 0);
-        
-        // // 发送数据
-        // int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
-        // if (send_cnt < 0) {
-        //     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        //         set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-        //         return 0;
-        //     }
-        //     conn->close(conn);
-        //     return -1;
-        // }
-        
-        // // 发送 chunk 结尾
-        // send(conn->fd, "\r\n", 2, 0);
-        
-        // conn->wlen = 0;
-        
-        // // 继续等待更多数据
-        // set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        // return 0;
     }
 
     // 3. 全部发送完毕,关闭连接，如果不关闭，刷新浏览器会建立新的连接
@@ -273,4 +256,18 @@ int http_callback(struct connect* conn) {
     } 
 
     return 0;
+}
+
+
+
+/************ helper *************/
+
+static void init_send_chunk(struct connect* conn) {
+    conn->app.http.file_fd = -1;  // 标记为不从文件读取
+    conn->app.http.remain = -1;   // 表示大小未知
+    conn->app.http.header_sent = false;
+
+    // conn->app.http.file_fd = fd;
+    // conn->app.http.remain = file_size;
+    // conn->app.http.header_sent = false;  // 新增标志:响应头是否已发送
 }
