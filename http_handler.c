@@ -10,26 +10,13 @@
 #include <sys/epoll.h>
 
 #include "http_handler.h"
+#include "http_helper.h"
 #include "reactor.h"
+
 
 #define LIBHTTP_REQUEST_MAX_SIZE CONNECT_BUF_LEN
 
-const char* body_200 = "<html><body>Hello from Reactor!</body></html>";
-const char* body_400 = "<html><body>400 Bad Request</body></html>";
-const char* body_404 = "<html><body>404 Not found</body></html>";
-const char* body_405 = "<html><body>405 Method Not Allowed</body></html>";
 
-const char* status_200 = "OK";
-const char* status_400 = "BAD";
-const char* status_404 = "NOTFOUND";
-const char* status_405 = "NOTALLOWED";
-
-const char* connect_close      = "Connection: close";
-const char* connect_keep_alive = "Connection: keep-alive";
-
-const char* type_no_need        = " ";
-const char* type_image_jpg      = "Content-Type: image/jpeg";
-const char* type_text_html      = "Content-Type: text/html; charset=utf-8";
 
 int http_response_status(struct connect* conn, int status_code);
 
@@ -39,19 +26,11 @@ int http_get_status_code (const char* request_buf) {
     if (request_buf == NULL || request_buf[0] == '\0') {
         status_code = 400;
     } 
-    // else if (strncmp(request_buf, "GET ", 4) != 0) {
-    //     status_code = 405;
-    // }
+
     return status_code;
 }
 
-/*      "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Content-Length: 45\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "<html><body>Hello from Reactor!</body></html>";
-        第一次连接的时候发送响应头     */
+/*  第一次连接的时候，初始化coon->app.http，准备响应头给send_cb发送  */
 int generate_http_response(struct connect* conn) {
     char* response_buf = conn->wbuf;
     char* request_buf = conn->rbuf;
@@ -62,33 +41,28 @@ int generate_http_response(struct connect* conn) {
     if (status_code != 200) {
         return http_response_status(conn, status_code);
     }
-    // 忽略 request,直接返回图片
-    const char* filepath = "resource/featured.jpg";
-    
-    int fd = open(filepath, O_RDONLY);
-    if (fd < 0) {
-        printf("open bad fd\n");
-        return http_response_status(conn, 404);
-    }
 
-
-    // 获取文件大小
-    struct stat st;
-    fstat(fd, &st);
-    off_t file_size = st.st_size;
 
     // 只准备响应头,不发送!
     conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: image/jpeg\r\n"
-        "Content-Length: %ld\r\n"
-        // "Connection: close\r\n\r\n",
-        "Connection: keep-alive\r\n\r\n",
-        file_size);
-    conn->app.http.file_fd = fd;
-    conn->app.http.remain = file_size;
-    conn->app.http.header_sent = false;  // 新增标志:响应头是否已发送
+        // "Content-Length: %ld\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Connection: keep-alive\r\n\r\n"
+        // file_size
+    );
+    // conn->app.http.file_fd = fd;
+    // conn->app.http.remain = file_size;
+    // conn->app.http.header_sent = false;  // 新增标志:响应头是否已发送
+
+            conn->app.http.file_fd = -1;  // 标记为不从文件读取
+        conn->app.http.remain = -1;   // 表示大小未知
+        conn->app.http.header_sent = false;
     
+    printf("=====HTTP RESPONSE====\n");
+    printf("%s",conn->wbuf);
+    printf("====END HTTP RESPONSE====\n");
     return conn->wlen;
 }
 
@@ -156,23 +130,35 @@ int http_response_status(struct connect* conn, int status_code) {
 
 int http_callback(struct connect* conn) {
     // 1. 先发送响应头
-    if (conn->wlen > 0) {
-        int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
-        if (send_cnt < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    if (conn->app.http.header_sent == false) {
+        printf("send response header\n");
+        if (conn->wlen > 0) {
+            int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
+            if (send_cnt < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                    return 0;
+                }
+                conn->close(conn);
+                return -1;
+            }
+            conn->wlen -= send_cnt;
+            /* 缓冲区还没发完，触发EPOLL_OUT表示本次发送发完了，等下次epoll事件触发发下一段内容 */
+            if (conn->wlen > 0) {
+                memmove(conn->wbuf, conn->wbuf + send_cnt, conn->wlen);
                 set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
                 return 0;
             }
-            conn->close(conn);
-            return -1;
+            conn->app.http.header_sent = true;
+            if (conn->app.http.remain == -1) {
+                printf("HTTP fd:%d waiting for camera data\n", conn->fd);
+                set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+                return 0;
+            }    
+        } else {
+            conn->app.http.header_sent = true;
         }
-        conn->wlen -= send_cnt;
-        /* 缓冲区还没发完，触发EPOLL_OUT表示本次发送发完了，等下次epoll事件触发发下一段内容 */
-        if (conn->wlen > 0) {
-            memmove(conn->wbuf, conn->wbuf + send_cnt, conn->wlen);
-            set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-            return 0;
-        }
+
     }
 
     // 2. 再发送文件内容
@@ -183,6 +169,7 @@ int http_callback(struct connect* conn) {
         
         if (bytes_read > 0) {
             int send_cnt = send(conn->fd, conn->wbuf, bytes_read, 0);
+            // printf("sending pic...\n");
             if (send_cnt < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
@@ -199,15 +186,91 @@ int http_callback(struct connect* conn) {
                 return 0;
             }
         }
-        
+        printf("send pic OK\n");
         // 发送完毕
         close(http->file_fd);
         http->file_fd = -1;
     }
 
-    // 3. 全部发送完毕,关闭连接
-    conn->close(conn);
-    // conn->serve_type = SERVE_NOT_INIT;
+        // 3. 如果是 chunked 模式且有数据在 wbuf，发送 chunk
+    if (http->remain == -1 && conn->wlen > 0) {
+        // 发送 chunk 格式: <size-in-hex>\r\n<data>\r\n
+        // char chunk_header[32];
+        // int header_len = snprintf(chunk_header, sizeof(chunk_header), 
+        //                           "%x\r\n", conn->wlen);
+        char chunk_buf[CONNECT_BUF_LEN + 64];  // 额外空间用于 chunk 头尾
+        int chunk_header_len = snprintf(chunk_buf, 64, "%x\r\n", conn->wlen);
+        // 复制数据
+        memcpy(chunk_buf + chunk_header_len, conn->wbuf, conn->wlen);
+        
+        // 添加 chunk 结尾
+        memcpy(chunk_buf + chunk_header_len + conn->wlen, "\r\n", 2);
+        
+        int total_len = chunk_header_len + conn->wlen + 2;
+        
+        // 发送整个 chunk
+        int sent = 0;
+        while (sent < total_len) {
+            int send_cnt = send(conn->fd, chunk_buf + sent, total_len - sent, 0);
+            if (send_cnt < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // 保存未发送的数据
+                    if (sent < chunk_header_len + conn->wlen) {
+                        int remaining = conn->wlen - (sent - chunk_header_len);
+                        if (remaining > 0) {
+                            memmove(conn->wbuf, conn->wbuf + conn->wlen - remaining, remaining);
+                            conn->wlen = remaining;
+                        }
+                    } else {
+                        conn->wlen = 0;
+                    }
+                    set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                    return 0;
+                }
+                perror("send chunk");
+                conn->close(conn);
+                return -1;
+            }
+            sent += send_cnt;
+        }
+        
+        printf("Sent chunk: %d bytes to fd:%d\n", conn->wlen, conn->fd);
+        conn->wlen = 0;
+        
+        // 继续等待更多数据
+        set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+        // // 先发送 chunk 大小
+        // send(conn->fd, chunk_header, header_len, 0);
+        
+        // // 发送数据
+        // int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
+        // if (send_cnt < 0) {
+        //     if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        //         set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+        //         return 0;
+        //     }
+        //     conn->close(conn);
+        //     return -1;
+        // }
+        
+        // // 发送 chunk 结尾
+        // send(conn->fd, "\r\n", 2, 0);
+        
+        // conn->wlen = 0;
+        
+        // // 继续等待更多数据
+        // set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        // return 0;
+    }
+
+    // 3. 全部发送完毕,关闭连接，如果不关闭，刷新浏览器会建立新的连接
+    if (http->keep_alive &&  http->remain != -1) {
+        // 保持连接，等待下一个请求
+        conn->serve_type = SERVE_NOT_INIT;  // 重置状态
+        //修改监听状态，告诉 epoll，现在只关心这个连接是否有新数据到达（不再关心是否可写）
+        set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+    } 
 
     return 0;
 }

@@ -2,9 +2,9 @@
 #define __CONNECT_POOL_H__
 
 #include <stdbool.h>
+#include <sys/types.h>
 
-#define NUM_OF_CONNECTOR 128
-#define CONNECT_BUF_LEN 4096
+#include "config.h"
 
 struct http_context {
     int file_fd;
@@ -14,19 +14,27 @@ struct http_context {
     int content_type;   // jpg//text//...
     bool keep_alive;    // Connection: close -- Connection: keep-alive
     char path[256];     //请求路径
+    bool wait_for_cam;  // 新增：是否等待相机传输
 };
-
+/* 相机端: SEND <目标http_fd>
+    例如:   SEND 7 */
+struct cam_terminal {
+    // int64_t remain;
+    // char name[64];
+    int dest;// <目标http的fd> get_connector(fd);
+};
 
 struct connect{
     int fd;
+    int serve_type;
 
+    /* 缓冲区 */
     char rbuf[CONNECT_BUF_LEN];
     int rlen;
     char wbuf[CONNECT_BUF_LEN];
     int wlen;
 
-    int serve_type;
-
+    /* 回调函数 */
     union recv_func
     {
         int (*accept_cb)(struct connect*);
@@ -35,8 +43,10 @@ struct connect{
     int (*send_cb)(struct connect*);
     void (*close)(struct connect*);
 
+    /* APP */
     union {
         struct http_context http;
+        struct cam_terminal cam;
     }app;//应用层内容
 };
 struct connect_node{
@@ -50,8 +60,8 @@ struct connect_pool{
 };
 
 /* structure */
-void connect_pool_init(struct connect_pool*);
-struct connect* get_connector(int,struct connect_pool*);
-struct connect_node* get_pool (int num, struct connect_pool* pool);
+void connect_pool_init(void);
+struct connect* get_connector(int);
+// struct connect_node* get_pool (int);
 
 #endif
