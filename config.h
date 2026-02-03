@@ -6,5 +6,5 @@
 /* epoll */
 #define MAX_EVENTS 2046
 #define NUM_OF_CONNECTOR 128
-// #define CONNECT_BUF_LEN 1024*1024
-#define CONNECT_BUF_LEN 4096
+#define CONNECT_BUF_LEN 512*1024
+// #define CONNECT_BUF_LEN 4096

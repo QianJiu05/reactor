@@ -14,7 +14,7 @@ struct http_context {
     int content_type;   // jpg//text//...
     bool keep_alive;    // Connection: close -- Connection: keep-alive
     char path[256];     //请求路径
-    bool wait_for_cam;  // 新增：是否等待相机传输
+    bool stream_mode;  
 };
 /* 相机端: SEND <目标http_fd>
     例如:   SEND 7 */
