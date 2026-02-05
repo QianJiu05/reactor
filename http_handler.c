@@ -37,13 +37,19 @@ int generate_http_response(struct connect* conn) {
     if (status_code != 200) { return http_response_status(conn, status_code); }
 
     // 生成响应头
+    // conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
+    //                 "HTTP/1.1 200 OK\r\n"
+    //                 "Content-Type: image/jpeg\r\n"
+    //                 // "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+    //                 "Connection: close\r\n"
+    //                 // "Connection: keep-alive\r\n"
+    //                 "Cache-Control: no-cache\r\n\r\n");
+
     conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: image/jpeg\r\n"
-                    // "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-                    "Connection: close\r\n"
-                    // "Connection: keep-alive\r\n"
-                    "Cache-Control: no-cache\r\n\r\n");
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+            "Connection: keep-alive\r\n"
+            "Cache-Control: no-cache\r\n\r\n");
 
     init_send_stream(conn);
 
@@ -71,8 +77,7 @@ int generate_http_response(struct connect* conn) {
     memset(conn->wbuf, 0, CONNECT_BUF_LEN);
     conn->app.http.header_sent = true;
 
-    // 【关键修复】: 立即清空 rbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
-    // 这样后续 http_callback 处理时，rbuf 里就只有纯净的相机数据了
+    // 空 rbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
     printf("Headers sent. Cleaning rbuf/wbuf for stream data.\n");
     memset(conn->rbuf, 0, CONNECT_BUF_LEN);
     conn->rlen = 0;
@@ -123,38 +128,7 @@ int http_callback(struct connect* conn) {
             // MJPEG 格式: --frame\r\nContent-Type: image/jpeg\r\nContent-Length: XXX\r\n\r\n[数据]
             printf("Found complete JPEG frame: %d bytes\n", jpeg_end);
 
-                        // 1. 直接发送图片数据
-            int sent_body = 0;
-            while (sent_body < jpeg_end) {
-                int n = send(conn->fd, conn->wbuf + sent_body, jpeg_end - sent_body, 0);
-                if (n < 0) {
-                    if (errno == EAGAIN) { usleep(1000); continue; }
-                    conn->close(conn); return -1;
-                }
-                sent_body += n;
-            }
-
-            printf("Sent JPEG image: %d bytes to fd:%d\n", jpeg_end, conn->fd);
-            close(conn->fd);
-            // char frame_header[256];
-            // int header_len = snprintf(frame_header, sizeof(frame_header),
-            //             "--frame\r\n"
-            //             "Content-Type: image/jpeg\r\n"
-            //             "Content-Length: %d\r\n\r\n",
-            //             jpeg_end);
-            
-            // // A. 发送帧头
-            // int sent_header = 0;
-            // while(sent_header < header_len) {
-            //     int n = send(conn->fd, frame_header + sent_header, header_len - sent_header, 0);
-            //     if (n < 0) {
-            //         if (errno == EAGAIN) { usleep(1000); continue; } // 忙等待
-            //         conn->close(conn); return -1;
-            //     }
-            //     sent_header += n;
-            // }
-
-            // // B. 发送图片体
+            //             // 1. 直接发送图片数据
             // int sent_body = 0;
             // while (sent_body < jpeg_end) {
             //     int n = send(conn->fd, conn->wbuf + sent_body, jpeg_end - sent_body, 0);
@@ -165,22 +139,53 @@ int http_callback(struct connect* conn) {
             //     sent_body += n;
             // }
 
-            // // C. 发送结尾换行
-            // int sent_end = 0;
-            // while (sent_end < 2) {
-            //     int n = send(conn->fd, "\r\n" + sent_end, 2 - sent_end, 0);
-            //     if (n < 0) {
-            //         if (errno == EAGAIN) { usleep(1000); continue; }
-            //         break;
-            //     }
-            //     sent_end += n;
-            // }
+            // printf("Sent JPEG image: %d bytes to fd:%d\n", jpeg_end, conn->fd);
+            // close(conn->fd);
+            char frame_header[256];
+            int header_len = snprintf(frame_header, sizeof(frame_header),
+                        "--frame\r\n"
+                        "Content-Type: image/jpeg\r\n"
+                        "Content-Length: %d\r\n\r\n",
+                        jpeg_end);
+            
+            // A. 发送帧头
+            int sent_header = 0;
+            while(sent_header < header_len) {
+                int n = send(conn->fd, frame_header + sent_header, header_len - sent_header, 0);
+                if (n < 0) {
+                    if (errno == EAGAIN) { usleep(1000); continue; } // 忙等待
+                    conn->close(conn); return -1;
+                }
+                sent_header += n;
+            }
 
-            // // 【关键修改】发送下一帧的边界，强制浏览器渲染当前帧
-            // // Chrome 等浏览器常需要看到下一个 boundary 才会显示上一帧
-            // send(conn->fd, "--frame\r\n", 9, 0);
+            // B. 发送图片体
+            int sent_body = 0;
+            while (sent_body < jpeg_end) {
+                int n = send(conn->fd, conn->wbuf + sent_body, jpeg_end - sent_body, 0);
+                if (n < 0) {
+                    if (errno == EAGAIN) { usleep(1000); continue; }
+                    conn->close(conn); return -1;
+                }
+                sent_body += n;
+            }
 
-            // printf("Sent MJPEG frame: %d bytes to fd:%d\n", jpeg_end, conn->fd);
+            // C. 发送结尾换行
+            int sent_end = 0;
+            while (sent_end < 2) {
+                int n = send(conn->fd, "\r\n" + sent_end, 2 - sent_end, 0);
+                if (n < 0) {
+                    if (errno == EAGAIN) { usleep(1000); continue; }
+                    break;
+                }
+                sent_end += n;
+            }
+
+            // 发送下一帧的边界，强制浏览器渲染当前帧
+            // Chrome 等浏览器常需要看到下一个 boundary 才会显示上一帧
+            send(conn->fd, "--frame\r\n", 9, 0);
+
+            printf("Sent MJPEG frame: %d bytes to fd:%d\n", jpeg_end, conn->fd);
 
             // 4. 移除缓冲区中已发送的数据
             if (jpeg_end < conn->wlen) {
