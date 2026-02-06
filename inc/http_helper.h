@@ -23,10 +23,10 @@ const char* type_multipart      = "Content-Type: multipart/x-mixed-replace; boun
     // else if (http->file_fd >= 0 && http->remain > 0) 
     // {
     //     int to_read = (http->remain < CONNECT_BUF_LEN) ? http->remain : CONNECT_BUF_LEN;
-    //     int bytes_read = read(http->file_fd, conn->wbuf, to_read);
+    //     int bytes_read = read(http->file_fd, conn->outbuf, to_read);
         
     //     if (bytes_read > 0) {
-    //         int send_cnt = send(conn->fd, conn->wbuf, bytes_read, 0);
+    //         int send_cnt = send(conn->fd, conn->outbuf, bytes_read, 0);
     //         if (send_cnt < 0) {
     //             if (errno == EAGAIN || errno == EWOULDBLOCK) {
     //                 set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);

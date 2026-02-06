@@ -16,6 +16,7 @@ struct http_context {
     char path[256];     //请求路径
     bool stream_mode;  
 };
+
 /* 相机端: SEND <目标http_fd>
     例如:   SEND 7 */
 struct cam_terminal {
@@ -29,10 +30,10 @@ struct connect{
     int serve_type;
 
     /* 缓冲区 */
-    char rbuf[CONNECT_BUF_LEN];
-    int rlen;
-    char wbuf[CONNECT_BUF_LEN];
-    int wlen;
+    char inbuf[CONNECT_BUF_LEN];
+    int inlen;
+    char outbuf[CONNECT_BUF_LEN];
+    int outlen;
 
     /* 回调函数 */
     union recv_func
@@ -60,8 +61,7 @@ struct connect_pool{
 };
 
 /* structure */
-void connect_pool_init(void);
-struct connect* get_connector(int);
-// struct connect_node* get_pool (int);
+void connect_pool_init(struct reactor*);
+struct connect* get_connector(struct reactor*, int);
 
 #endif

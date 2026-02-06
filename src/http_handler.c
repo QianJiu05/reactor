@@ -32,12 +32,12 @@ int http_get_status_code (const char* request_buf) {
 /*  第一次连接的时候，初始化coon->app.http，发送响应头  */
 int generate_http_response(struct connect* conn) {
 
-    int status_code = http_get_status_code(conn->rbuf);
+    int status_code = http_get_status_code(conn->inbuf);
     printf("status code = %d\n",status_code);
     if (status_code != 200) { return http_response_status(conn, status_code); }
 
     // 生成响应头
-    // conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
+    // conn->outlen = snprintf(conn->outbuf, CONNECT_BUF_LEN,
     //                 "HTTP/1.1 200 OK\r\n"
     //                 "Content-Type: image/jpeg\r\n"
     //                 // "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
@@ -45,7 +45,7 @@ int generate_http_response(struct connect* conn) {
     //                 // "Connection: keep-alive\r\n"
     //                 "Cache-Control: no-cache\r\n\r\n");
 
-    conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
+    conn->outlen = snprintf(conn->outbuf, CONNECT_BUF_LEN,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
             "Connection: keep-alive\r\n"
@@ -55,10 +55,10 @@ int generate_http_response(struct connect* conn) {
 
     // 循环发送，直到发完或出错
     int total_sent = 0;
-    int data_len = conn->wlen;
+    int data_len = conn->outlen;
 
     while (total_sent < data_len) {
-        int n = send(conn->fd, conn->wbuf + total_sent, data_len - total_sent, 0);
+        int n = send(conn->fd, conn->outbuf + total_sent, data_len - total_sent, 0);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // 缓冲区满了，稍微休息一下再重试（简单忙等待，确保头必须发出去）
@@ -73,14 +73,14 @@ int generate_http_response(struct connect* conn) {
     }
 
     // 发送完毕，清理状态
-    conn->wlen = 0;
-    memset(conn->wbuf, 0, CONNECT_BUF_LEN);
+    conn->outlen = 0;
+    memset(conn->outbuf, 0, CONNECT_BUF_LEN);
     conn->app.http.header_sent = true;
 
-    // 空 rbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
-    printf("Headers sent. Cleaning rbuf/wbuf for stream data.\n");
-    memset(conn->rbuf, 0, CONNECT_BUF_LEN);
-    conn->rlen = 0;
+    // 空 inbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
+    printf("Headers sent. Cleaning inbuf/outbuf for stream data.\n");
+    memset(conn->inbuf, 0, CONNECT_BUF_LEN);
+    conn->inlen = 0;
 
     return 0;
 }
@@ -95,30 +95,30 @@ int http_callback(struct connect* conn) {
 
     /* 2. 发送文件内容 */
     struct http_context* http = &conn->app.http;
-    /* 如果是 chunked 模式且有数据在 wbuf，发送 chunk 
+    /* 如果是 chunked 模式且有数据在 outbuf，发送 chunk 
         chunk 格式: <size-in-hex>\r\n<data>\r\n  */
     if (http->stream_mode == true){
-        if (conn->rlen > 0) {
-            printf("copy rbuf-->wbuf (rlen=%d)\n", conn->rlen);
+        if (conn->inlen > 0) {
+            printf("copy inbuf-->outbuf (inlen=%d)\n", conn->inlen);
 
-            if (conn->wlen + conn->rlen > CONNECT_BUF_LEN) {
-                printf("ERROR: Buffer overflow! wlen=%d + rlen=%d > %d\n",
-                    conn->wlen, conn->rlen, CONNECT_BUF_LEN);
+            if (conn->outlen + conn->inlen > CONNECT_BUF_LEN) {
+                printf("ERROR: Buffer overflow! outlen=%d + inlen=%d > %d\n",
+                    conn->outlen, conn->inlen, CONNECT_BUF_LEN);
                 return 0;
             }
 
             // 追加而不是覆盖
-            memcpy(conn->wbuf + conn->wlen, conn->rbuf, conn->rlen);
-            conn->wlen += conn->rlen;
-            conn->rlen = 0;
-            memset(conn->rbuf, 0, CONNECT_BUF_LEN);
+            memcpy(conn->outbuf + conn->outlen, conn->inbuf, conn->inlen);
+            conn->outlen += conn->inlen;
+            conn->inlen = 0;
+            memset(conn->inbuf, 0, CONNECT_BUF_LEN);
         }
 
         // 检查是否有完整的 JPEG（查找 FF D9 结束标记）
         int jpeg_end = -1;
-        for (int i = 0; i < conn->wlen - 1; i++) {
-            if ((unsigned char)conn->wbuf[i] == 0xFF && 
-                (unsigned char)conn->wbuf[i+1] == 0xD9) {
+        for (int i = 0; i < conn->outlen - 1; i++) {
+            if ((unsigned char)conn->outbuf[i] == 0xFF && 
+                (unsigned char)conn->outbuf[i+1] == 0xD9) {
                 jpeg_end = i + 2;  // JPEG 结束位置
                 break;
             }
@@ -131,7 +131,7 @@ int http_callback(struct connect* conn) {
             //             // 1. 直接发送图片数据
             // int sent_body = 0;
             // while (sent_body < jpeg_end) {
-            //     int n = send(conn->fd, conn->wbuf + sent_body, jpeg_end - sent_body, 0);
+            //     int n = send(conn->fd, conn->outbuf + sent_body, jpeg_end - sent_body, 0);
             //     if (n < 0) {
             //         if (errno == EAGAIN) { usleep(1000); continue; }
             //         conn->close(conn); return -1;
@@ -162,7 +162,7 @@ int http_callback(struct connect* conn) {
             // B. 发送图片体
             int sent_body = 0;
             while (sent_body < jpeg_end) {
-                int n = send(conn->fd, conn->wbuf + sent_body, jpeg_end - sent_body, 0);
+                int n = send(conn->fd, conn->outbuf + sent_body, jpeg_end - sent_body, 0);
                 if (n < 0) {
                     if (errno == EAGAIN) { usleep(1000); continue; }
                     conn->close(conn); return -1;
@@ -188,12 +188,12 @@ int http_callback(struct connect* conn) {
             printf("Sent MJPEG frame: %d bytes to fd:%d\n", jpeg_end, conn->fd);
 
             // 4. 移除缓冲区中已发送的数据
-            if (jpeg_end < conn->wlen) {
-                memmove(conn->wbuf, conn->wbuf + jpeg_end, conn->wlen - jpeg_end);
-                conn->wlen -= jpeg_end;
-                printf("Remaining data: %d\n", conn->wlen);
+            if (jpeg_end < conn->outlen) {
+                memmove(conn->outbuf, conn->outbuf + jpeg_end, conn->outlen - jpeg_end);
+                conn->outlen -= jpeg_end;
+                printf("Remaining data: %d\n", conn->outlen);
             } else {
-                conn->wlen = 0;
+                conn->outlen = 0;
             }
         } else {
             printf("jpeg end not found\n");
@@ -282,7 +282,7 @@ static int http_response_status(struct connect* conn, int status_code) {
     }
 
     int body_len = strlen(body);
-    int ret = snprintf(conn->wbuf, CONNECT_BUF_LEN,
+    int ret = snprintf(conn->outbuf, CONNECT_BUF_LEN,
                     "HTTP/1.1 %d %s\r\n"    /* status_code, status_response */
                     "%s\r\n"                /* type */
                     "Content-Length: %d\r\n" /* body_len,  */

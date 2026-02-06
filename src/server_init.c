@@ -10,14 +10,14 @@
 
 /* 1.创建socket   AF_INET -> 允许远程通信
                  SOCK_STREAM -> TCP协议  */
-int server_init (int serverfd) {
+int server_init (struct reactor* main, int serverfd) {
     serverfd = socket(AF_INET, SOCK_STREAM, 0);
     if (-1 == serverfd)
 	{
 		printf("socket error!\n");
 		return -1;
 	}
-    struct connect* connector = get_connector(serverfd);
+    struct connect* connector = get_connector(main, serverfd);
     connect_init(connector,serverfd);
     connector->recv_func.accept_cb = accept_callback;
     return serverfd;

@@ -20,27 +20,29 @@
 #include "server_init.h"
 
 
-
 /* epoll */
 void connect_init(struct connect* conn, int fd) ;
-void set_epoll(int EVENT, int OPERATION, int fd) ;
+void set_epoll(struct reactor* , int EVENT, int OPERATION, int fd) ;
 
 /* callback */
 int accept_callback(struct connect*);
 int recv_callback(struct connect*);
 void close_callback(struct connect*);
-
 int echo_callback(struct connect* conn);
 
+void patch_connect(int fd) ;
 
-int epfd;
+struct reactor main_reactor;
+struct reactor sub_reactor[NUM_OF_REACTOR];
+
 struct sockaddr_in server_addr;
-int iAddrLen = sizeof(struct sockaddr);
+int iAddinlen = sizeof(struct sockaddr);
 
+void patch_connect(int client_fd);
 
 
 int main (void) {
-    connect_pool_init();
+    connect_pool_init(&main_reactor);
 
     int serverfd;
     serverfd = server_init(serverfd);
@@ -51,36 +53,37 @@ int main (void) {
     if (listen(serverfd, BACKLOG) == -1)
         printf("listen");
 
+    //创建子reactor
+    for (int i = 0; i < NUM_OF_REACTOR; i++) {
+        
+    }
+
     struct epoll_event events[MAX_EVENTS]; 
 
 
-    epfd = epoll_create(1);
-    set_epoll(EPOLLIN | EPOLLOUT, EPOLL_CTL_ADD, serverfd);
+
+
+
+    main_reactor.epfd = epoll_create(1);
+    set_epoll(&main_reactor, EPOLLIN | EPOLLOUT, EPOLL_CTL_ADD, serverfd);
+    // set_epoll(&main_reactor, EPOLLIN, EPOLL_CTL_ADD, serverfd);
 
     while (1)
     {
         int nready;//就绪了多少个事件
-        nready = epoll_wait(epfd,events,MAX_EVENTS,-1);
+        nready = epoll_wait(main_reactor.epfd, events, MAX_EVENTS, -1);
 
         for (int i = 0; i < nready; i++) {
             if (serverfd == events[i].data.fd) {
-                /* 建立新连接 */
-                struct connect* this = get_connector(serverfd);
-                this->recv_func.accept_cb(this);
-
-            } else {
-                /* events[i].data.fd为已有的fd */
-                struct connect* this = get_connector(events[i].data.fd);
-
-                /* 有新msg进入 */
-                if (events[i].events & EPOLLIN) {
-                    this->recv_func.recv_cb(this);
-
-                /* wbuf已经发送完，发送新的wbuf */
-                } else if (events[i].events & EPOLLOUT) {
-                    this->send_cb(this);
-                }
-            }
+                /* listen到新连接，通过accept(serverfd)建立新连接 */
+                // int client_fd = accept(serverfd,)...
+                struct reactor* patcher = get_next_reactor();
+                /* 把client_fd分发给sub_reactor */
+                patch_connect(patcher, client_fd);
+                // struct connect* this = get_connector(serverfd);
+                // this->recv_func.accept_cb(this);
+                //TODO : 绑定回调函数也应该在这里
+            } 
         }
         
     }	
@@ -88,13 +91,25 @@ int main (void) {
     return 0;
 }
 
+// TcpConnectionPtr conn(new TcpConnection(ioLoop,
+                                            // connName,
+                                            // sockfd,
+                                            // localAddr,
+                                            // peerAddr));
+
+struct reactor* get_next_reactor(){
+    
+}
+void patch_connect(int fd) {
+
+}
 /****************************** callback *******************************/
 int parse_serve_type(struct connect* conn) {
     int type = SERVE_ECHO;
 
-    if (strncmp(conn->rbuf, "GET ", 4) == 0) {
+    if (strncmp(conn->inbuf, "GET ", 4) == 0) {
         type = SERVE_HTTP;
-    } else if (strncmp(conn->rbuf, "SEND ", 5) == 0) {
+    } else if (strncmp(conn->inbuf, "SEND ", 5) == 0) {
         type = SERVE_GET_RESOURCE;
     } 
 
@@ -102,7 +117,7 @@ int parse_serve_type(struct connect* conn) {
 }
 
 int accept_callback(struct connect* conn) {
-    int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddrLen);
+    int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddinlen);
     if (new_fd == -1) {
         printf("get bad new_fd\n");
         return -1;
@@ -115,16 +130,16 @@ int accept_callback(struct connect* conn) {
 }
 
 int recv_callback(struct connect* conn) {
-    /* 把数据接收到rbuf */
-    int to_copy = CONNECT_BUF_LEN - conn->rlen;
-    conn->rlen += recv(conn->fd, conn->rbuf + conn->rlen , to_copy, 0);
+    /* 把数据接收到inbuf */
+    int to_copy = CONNECT_BUF_LEN - conn->inlen;
+    conn->inlen += recv(conn->fd, conn->inbuf + conn->inlen , to_copy, 0);
 
-    /* rlen == 0 表示对端正常关闭，应直接 close，不要看 errno。
-        只有 rlen < 0 才检查 errno == EAGAIN/EWOULDBLOCK。 */
-    if (conn->rlen == 0){
+    /* inlen == 0 表示对端正常关闭，应直接 close，不要看 errno。
+        只有 inlen < 0 才检查 errno == EAGAIN/EWOULDBLOCK。 */
+    if (conn->inlen == 0){
         conn->close(conn);
         return -1;
-    } else if (conn->rlen < 0) {
+    } else if (conn->inlen < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0;  // 继续等待
         } else {
@@ -133,10 +148,10 @@ int recv_callback(struct connect* conn) {
         }
     }
 
-    // conn->rbuf[conn->rlen] = '\0';
+    // conn->inbuf[conn->inlen] = '\0';
 
     if (conn->serve_type == SERVE_NOT_INIT || conn->serve_type == SERVE_HTTP) {
-        // 解析rlen，GET-->HTTP/ SEND-->recv from cam/ echo
+        // 解析inlen，GET-->HTTP/ SEND-->recv from cam/ echo
         // 生成 HTTP 响应(初始化 file_fd 和 remaining)
         int serve_type = parse_serve_type(conn);
         conn->serve_type = serve_type;
@@ -162,24 +177,24 @@ int recv_callback(struct connect* conn) {
     
     conn->send_cb(conn);
     return 0;
-    // printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
+    // printf("fd:%d msg:%s\n",conn->fd,conn->inbuf);
 }
 
 int echo_callback(struct connect* conn) {
-    strncpy(conn->wbuf, conn->rbuf, conn->rlen);
-    conn->wlen = conn->rlen;
-    printf("%d Get Msg: %s\n", conn->fd, conn->wbuf);
-    int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
-    conn->wlen -= send_cnt;
+    strncpy(conn->outbuf, conn->inbuf, conn->inlen);
+    conn->outlen = conn->inlen;
+    printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
+    int send_cnt = send(conn->fd, conn->outbuf, conn->outlen, 0);
+    conn->outlen -= send_cnt;
 
 
-    if (conn->wlen != 0) {
-        memmove(conn->wbuf, conn->wbuf + send_cnt, conn->wlen);
+    if (conn->outlen != 0) {
+        memmove(conn->outbuf, conn->outbuf + send_cnt, conn->outlen);
     } else {
-        memset(conn->wbuf, 0, sizeof(conn->wbuf));
+        memset(conn->outbuf, 0, sizeof(conn->outbuf));
         
     }
-    return conn->wlen;
+    return conn->outlen;
 }
 
 void close_callback(struct connect* conn) {
@@ -191,12 +206,11 @@ void close_callback(struct connect* conn) {
 
 
 
-
 /******************************* epoll  *******************************/
 void connect_init(struct connect* conn, int fd) {
     conn->fd = fd;
-    conn->rlen = 0;
-    conn->wlen = 0;
+    conn->inlen = 0;
+    conn->outlen = 0;
     conn->recv_func.recv_cb = recv_callback;
     conn->close = close_callback;
     conn->serve_type = SERVE_NOT_INIT;
@@ -209,12 +223,14 @@ void connect_init(struct connect* conn, int fd) {
 
 /* 
     EPOLLIN, EPOLL_CTL_ADD, fd --> 新增事件：监听 fd 的 EPOLLIN
+    EVENT: EPOLLIN, EPOLL_OUT
+    OPERATION: EPOLL_CTL_ADD, EPOLL_CTL_DEL
 */
-void set_epoll(int EVENT, int OPERATION, int fd) {
+void set_epoll(struct reactor* sub, int EVENT, int OPERATION, int fd) {
     struct epoll_event ev;
 
-    if (EVENT != 0) { ev.events = EVENT;}
+    if (EVENT == EPOLLIN || EVENT == EPOLLOUT) { ev.events = EVENT;}
     ev.data.fd = fd;
 
-    epoll_ctl(epfd, OPERATION, fd, &ev);
+    epoll_ctl(sub->epfd, OPERATION, fd, &ev);
 }
