@@ -1,8 +1,21 @@
+
 all: reactor
 
-HEADERS = connect_pool.h reactor.h http_handler.h recv_resource.h http_helper.h config.h server_init.h
-REACTOR_DEPS = reactor.c connect_pool.c http_handler.c recv_resource.c server_init.c $(HEADERS)
+HEADERS = 	inc/connect_pool.h \
+			inc/reactor.h \
+			inc/http_handler.h \
+			inc/recv_resource.h \
+			inc/http_helper.h \
+			config.h \
+			inc/server_init.h
 
 
-reactor : $(REACTOR_DEPS)
-	gcc -o reactor $(REACTOR_DEPS)
+SRC_FILES = src/reactor.c \
+			src/connect_pool.c \
+			src/http_handler.c \
+			src/recv_resource.c \
+			src/server_init.c
+			
+
+reactor: $(SRC_FILES) $(HEADERS)
+	gcc -o reactor $(SRC_FILES) -Iinc -I.
