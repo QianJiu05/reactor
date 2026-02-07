@@ -223,7 +223,8 @@ int http_callback(struct connect* conn)
         conn->idx_out -= send_cnt;
 
         if (conn->idx_out > 0) {/* 没发完，设置EPOLLOUT事件，下次接着发outbuf剩下的 */
-            memmove(conn->outbuf, conn->outbuf + conn->idx_out, send_cnt);
+            /* 发了send_cnt， 还剩idx_out， 前移idx_out个 */
+            memmove(conn->outbuf, conn->outbuf + send_cnt, conn->idx_out);
             set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
         } else {/* 全都发完了，设置EPOLLIN，继续接收数据进行发送 */
             memset(conn->outbuf, 0, CONNECT_BUF_LEN);

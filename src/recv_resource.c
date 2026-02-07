@@ -21,7 +21,6 @@
     3. dest->outbuf ----> http_client
 */
 int get_resource_callback(struct connect* conn) {
-    // printf("resource callback\n");
     struct connect* dest = get_connector(conn->app.cam.dest);
     if (dest == NULL) {
         printf("No destination connection\n");
@@ -45,7 +44,7 @@ int get_resource_callback(struct connect* conn) {
         return 0;
     }
 
-    memcpy(dest->inbuf+ dest->idx_in, conn->inbuf, to_copy);    
+    memcpy(dest->inbuf + dest->idx_in, conn->inbuf, to_copy);    
     dest->idx_in += to_copy;
     
     
