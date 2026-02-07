@@ -184,6 +184,7 @@ int generate_http_response(struct connect* conn)
    
 //     return 0;
 // }
+
 /* 
  *  让cam端直接封装好 jpg帧头帧尾
  *  http——callback只把数据从inbuf --> outbuf
@@ -191,7 +192,47 @@ int generate_http_response(struct connect* conn)
  */
 int http_callback(struct connect* conn) 
 {
+    int to_copy = conn->idx_in;
+    int res = CONNECT_BUF_LEN - conn->idx_out;
+    if (to_copy > res) to_copy = res;
 
+    if (to_copy > 0) {
+        memcpy(conn->outbuf + conn->idx_out, conn->inbuf, to_copy);
+        conn->idx_out += to_copy;
+        conn->idx_in -= to_copy;
+
+        if (conn->idx_in > 0) {
+            memmove(conn->inbuf, conn->inbuf + conn->idx_in, conn->idx_in);
+            conn->idx_in = 0;
+        }
+    }
+
+    if (conn->idx_out > 0) {/* 有数据可发 */
+        int send_cnt = send(conn->fd, conn->outbuf, conn->idx_out, 0);
+        if (send_cnt < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // 发送缓冲区满，等待 EPOLLOUT 事件
+                set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+                return 0;
+            }
+            // 发送错误
+            perror("send error");
+            return -1;
+        }
+
+        conn->idx_out -= send_cnt;
+
+        if (conn->idx_out > 0) {/* 没发完，设置EPOLLOUT事件，下次接着发outbuf剩下的 */
+            memmove(conn->outbuf, conn->outbuf + conn->idx_out, send_cnt);
+            set_epoll(EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+        } else {/* 全都发完了，设置EPOLLIN，继续接收数据进行发送 */
+            memset(conn->outbuf, 0, CONNECT_BUF_LEN);
+            set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        }
+    } else {/* 无数据可发，设置epollin，等待新数据 */
+        set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+    }
+    
 
 }
 

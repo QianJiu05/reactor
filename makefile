@@ -1,12 +1,12 @@
 
 all: reactor
 
-HEADERS = 	inc/connect_pool.h \
+HEADERS = 	config.h \
+			inc/connect_pool.h \
 			inc/reactor.h \
 			inc/http_handler.h \
 			inc/recv_resource.h \
 			inc/http_helper.h \
-			config.h \
 			inc/server_init.h
 
 
