@@ -37,8 +37,9 @@ int main (void) {
         return -1;
     }
 
-#define BUFLEN 1024*412
-    char picture[BUFLEN];
+#define BUFLEN 1024*512
+    char picture1[BUFLEN];
+    char picture2[BUFLEN];
     char buffer[BUFLEN];
 
 
@@ -46,7 +47,7 @@ int main (void) {
     struct stat st;
     fstat(file_fd, &st);
     off_t file_size = st.st_size;
-    read(file_fd, picture, file_size);
+    read(file_fd, picture1, file_size);
 
     int response_len = snprintf(buffer,BUFLEN,    
             "HTTP/1.1 200 OK\r\n"
@@ -65,7 +66,7 @@ int main (void) {
                         (int)file_size);
 
     if (len > 0 && len + file_size + 2 <= BUFLEN) {
-        memcpy(buffer + len, picture, file_size);
+        memcpy(buffer + len, picture1, file_size);
         len += file_size;
         memcpy(buffer + len, "\r\n", 2);
         len += 2;

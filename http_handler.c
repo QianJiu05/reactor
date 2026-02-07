@@ -13,7 +13,6 @@
 #include "http_helper.h"
 #include "reactor.h"
 
-
 #define LIBHTTP_REQUEST_MAX_SIZE CONNECT_BUF_LEN
 
 static int http_response_status(struct connect* conn, int status_code);
@@ -30,20 +29,11 @@ int http_get_status_code (const char* request_buf) {
 }
 
 /*  第一次连接的时候，初始化coon->app.http，发送响应头  */
-int generate_http_response(struct connect* conn) {
-
+int generate_http_response(struct connect* conn) 
+{
     int status_code = http_get_status_code(conn->rbuf);
-    printf("status code = %d\n",status_code);
+    // printf("status code = %d\n",status_code);
     if (status_code != 200) { return http_response_status(conn, status_code); }
-
-    // 生成响应头
-    // conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
-    //                 "HTTP/1.1 200 OK\r\n"
-    //                 "Content-Type: image/jpeg\r\n"
-    //                 // "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-    //                 "Connection: close\r\n"
-    //                 // "Connection: keep-alive\r\n"
-    //                 "Cache-Control: no-cache\r\n\r\n");
 
     conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
             "HTTP/1.1 200 OK\r\n"
@@ -61,7 +51,7 @@ int generate_http_response(struct connect* conn) {
         int n = send(conn->fd, conn->wbuf + total_sent, data_len - total_sent, 0);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // 缓冲区满了，稍微休息一下再重试（简单忙等待，确保头必须发出去）
+                // 缓冲区满了，简单忙等待，确保头必须发出去
                 usleep(1000); 
                 continue;
             }
@@ -78,7 +68,6 @@ int generate_http_response(struct connect* conn) {
     conn->app.http.header_sent = true;
 
     // 空 rbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
-    printf("Headers sent. Cleaning rbuf/wbuf for stream data.\n");
     memset(conn->rbuf, 0, CONNECT_BUF_LEN);
     conn->rlen = 0;
 
@@ -128,19 +117,6 @@ int http_callback(struct connect* conn) {
             // MJPEG 格式: --frame\r\nContent-Type: image/jpeg\r\nContent-Length: XXX\r\n\r\n[数据]
             printf("Found complete JPEG frame: %d bytes\n", jpeg_end);
 
-            //             // 1. 直接发送图片数据
-            // int sent_body = 0;
-            // while (sent_body < jpeg_end) {
-            //     int n = send(conn->fd, conn->wbuf + sent_body, jpeg_end - sent_body, 0);
-            //     if (n < 0) {
-            //         if (errno == EAGAIN) { usleep(1000); continue; }
-            //         conn->close(conn); return -1;
-            //     }
-            //     sent_body += n;
-            // }
-
-            // printf("Sent JPEG image: %d bytes to fd:%d\n", jpeg_end, conn->fd);
-            // close(conn->fd);
             char frame_header[256];
             int header_len = snprintf(frame_header, sizeof(frame_header),
                         "--frame\r\n"
@@ -183,15 +159,15 @@ int http_callback(struct connect* conn) {
 
             // 发送下一帧的边界，强制浏览器渲染当前帧
             // Chrome 等浏览器常需要看到下一个 boundary 才会显示上一帧
-            send(conn->fd, "--frame\r\n", 9, 0);
+            // send(conn->fd, "--frame\r\n", 9, 0);
 
-            printf("Sent MJPEG frame: %d bytes to fd:%d\n", jpeg_end, conn->fd);
+            // printf("Sent MJPEG frame: %d bytes to fd:%d\n", jpeg_end, conn->fd);
 
             // 4. 移除缓冲区中已发送的数据
             if (jpeg_end < conn->wlen) {
                 memmove(conn->wbuf, conn->wbuf + jpeg_end, conn->wlen - jpeg_end);
                 conn->wlen -= jpeg_end;
-                printf("Remaining data: %d\n", conn->wlen);
+                // printf("Remaining data: %d\n", conn->wlen);
             } else {
                 conn->wlen = 0;
             }
@@ -204,14 +180,7 @@ int http_callback(struct connect* conn) {
         return 0;
 
     } 
-    
-    // /* 3. 全部发送完毕,保持连接，等待下一个请求 */
-    // if (http->keep_alive) {
-    //     // conn->serve_type = SERVE_NOT_INIT;  // 重置状态
-    //     //修改监听状态，告诉 epoll，现在只关心这个连接是否有新数据到达（不再关心是否可写）
-    //     set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-    // } 
-
+   
     return 0;
 }
 
@@ -224,10 +193,6 @@ static void init_send_stream(struct connect* conn) {
     conn->app.http.remain = -1;   // 表示大小未知
     conn->app.http.header_sent = false;
     conn->app.http.stream_mode = true;
-
-    // conn->app.http.file_fd = fd;
-    // conn->app.http.remain = file_size;
-    // conn->app.http.header_sent = false;  // 新增标志:响应头是否已发送
 }
 
 /* "HTTP/1.1 200 OK\r\n" */
