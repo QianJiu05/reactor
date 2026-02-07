@@ -16,9 +16,9 @@
 
 /* 
     get_resource_callback接收相机客户端的数据
-    1. write (conn->rbuf ----> dest->rbuf)
-    2. dest->rbuf ----> dest->wbuf
-    3. dest->wbuf ----> http_client
+    1. write (conn->inbuf ----> dest->inbuf)
+    2. dest->inbuf ----> dest->outbuf
+    3. dest->outbuf ----> http_client
 */
 int get_resource_callback(struct connect* conn) {
     // printf("resource callback\n");
@@ -33,10 +33,10 @@ int get_resource_callback(struct connect* conn) {
         return -1;
     }
 
-    // 将数据复制到目标连接的 rbuf
-    int to_copy = conn->rlen;
-    if (to_copy > CONNECT_BUF_LEN - dest->rlen) {
-        to_copy = CONNECT_BUF_LEN - dest->rlen;  // 防止溢出
+    // 将数据复制到目标连接的 inbuf
+    int to_copy = conn->idx_in;
+    if (to_copy > CONNECT_BUF_LEN - dest->idx_in) {
+        to_copy = CONNECT_BUF_LEN - dest->idx_in;  // 防止溢出
     }
 
     if (to_copy == 0) {
@@ -45,24 +45,24 @@ int get_resource_callback(struct connect* conn) {
         return 0;
     }
 
-    memcpy(dest->rbuf+ dest->rlen, conn->rbuf, to_copy);    
-    dest->rlen += to_copy;
+    memcpy(dest->inbuf+ dest->idx_in, conn->inbuf, to_copy);    
+    dest->idx_in += to_copy;
     
     
-    // printf("Forwarded %d bytes from cam fd:%d to HTTP fd:%d (dest wlen=%d)\n", 
-        // to_copy, conn->fd, dest->fd, dest->wlen);
+    // printf("Forwarded %d bytes from cam fd:%d to HTTP fd:%d (dest idx_out=%d)\n", 
+        // to_copy, conn->fd, dest->fd, dest->idx_out);
 
-    if (to_copy < conn->rlen) {
+    if (to_copy < conn->idx_in) {
         // 还有数据未复制，移动到缓冲区前面
-        // memmove(conn->rbuf, conn->rbuf + to_copy, conn->rlen - to_copy);
-        memmove(conn->rbuf, conn->rbuf + to_copy, to_copy);
-        conn->rlen -= to_copy;
-        printf("Buffered %d bytes in camera fd:%d\n", conn->rlen, conn->fd);
+        // memmove(conn->inbuf, conn->inbuf + to_copy, conn->idx_in - to_copy);
+        memmove(conn->inbuf, conn->inbuf + to_copy, to_copy);
+        conn->idx_in -= to_copy;
+        printf("Buffered %d bytes in camera fd:%d\n", conn->idx_in, conn->fd);
         // 目标缓冲区有空间后，会再次调用这个函数
     } else {
         // 全部数据已复制
-        conn->rlen = 0;
-        memset(conn->rbuf, 0, CONNECT_BUF_LEN);
+        conn->idx_in = 0;
+        memset(conn->inbuf, 0, CONNECT_BUF_LEN);
     }
 
     // 通知 epoll 目标连接可以发送数据
@@ -71,11 +71,11 @@ int get_resource_callback(struct connect* conn) {
     return to_copy;
 }
 
-/* TYPE = SEND_RESOURCE: 清理rlen，不能把第一次连接的内容写到buf里 */
+/* TYPE = SEND_RESOURCE: 清理idx_in，不能把第一次连接的内容写到buf里 */
 int handle_resource(struct connect* conn) {
     // 格式: "SEND 7"
     int dest_fd;
-    if (sscanf(conn->rbuf, "SEND %d", &dest_fd) != 1) {
+    if (sscanf(conn->inbuf, "SEND %d", &dest_fd) != 1) {
         printf("Invalid SEND format\n");
         return -1;
     }
@@ -91,8 +91,8 @@ int handle_resource(struct connect* conn) {
     
     printf("Camera fd:%d -> HTTP client fd:%d\n", conn->fd, dest_fd);
     
-    // 清空 rbuf
-    memset(conn->rbuf, 0, conn->rlen);
-    conn->rlen = 0;
+    // 清空 inbuf
+    memset(conn->inbuf, 0, conn->idx_in);
+    conn->idx_in = 0;
     return 0;
 }

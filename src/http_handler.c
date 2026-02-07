@@ -31,11 +31,11 @@ int http_get_status_code (const char* request_buf) {
 /*  第一次连接的时候，初始化coon->app.http，发送响应头  */
 int generate_http_response(struct connect* conn) 
 {
-    int status_code = http_get_status_code(conn->rbuf);
+    int status_code = http_get_status_code(conn->inbuf);
     // printf("status code = %d\n",status_code);
     if (status_code != 200) { return http_response_status(conn, status_code); }
 
-    conn->wlen = snprintf(conn->wbuf, CONNECT_BUF_LEN,
+    conn->idx_out = snprintf(conn->outbuf, CONNECT_BUF_LEN,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
             "Connection: keep-alive\r\n"
@@ -45,10 +45,10 @@ int generate_http_response(struct connect* conn)
 
     // 循环发送，直到发完或出错
     int total_sent = 0;
-    int data_len = conn->wlen;
+    int data_len = conn->idx_out;
 
     while (total_sent < data_len) {
-        int n = send(conn->fd, conn->wbuf + total_sent, data_len - total_sent, 0);
+        int n = send(conn->fd, conn->outbuf + total_sent, data_len - total_sent, 0);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // 缓冲区满了，简单忙等待，确保头必须发出去
@@ -63,127 +63,137 @@ int generate_http_response(struct connect* conn)
     }
 
     // 发送完毕，清理状态
-    conn->wlen = 0;
-    memset(conn->wbuf, 0, CONNECT_BUF_LEN);
+    conn->idx_out = 0;
+    memset(conn->outbuf, 0, CONNECT_BUF_LEN);
     conn->app.http.header_sent = true;
 
-    // 空 rbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
-    memset(conn->rbuf, 0, CONNECT_BUF_LEN);
-    conn->rlen = 0;
+    // 空 inbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
+    memset(conn->inbuf, 0, CONNECT_BUF_LEN);
+    conn->idx_in = 0;
 
     return 0;
 }
 
 
 
-int http_callback(struct connect* conn) {
-    /* 响应头 */
-    if (conn->app.http.header_sent == false) {
-        printf("didn't send header\n");
-    }
+// int http_callback(struct connect* conn) 
+// {
+//     /* 响应头 */
+//     if (conn->app.http.header_sent == false) {
+//         printf("didn't send header\n");
+//     }
 
-    /* 2. 发送文件内容 */
-    struct http_context* http = &conn->app.http;
-    /* 如果是 chunked 模式且有数据在 wbuf，发送 chunk 
-        chunk 格式: <size-in-hex>\r\n<data>\r\n  */
-    if (http->stream_mode == true){
-        if (conn->rlen > 0) {
-            printf("copy rbuf-->wbuf (rlen=%d)\n", conn->rlen);
+//     /* 2. 发送文件内容 */
+//     struct http_context* http = &conn->app.http;
+//     /* 如果是 chunked 模式且有数据在 outbuf，发送 chunk 
+//         chunk 格式: <size-in-hex>\r\n<data>\r\n  */
+//     if (http->stream_mode == true){
+//         if (conn->idx_in > 0) {
+//             printf("copy inbuf-->outbuf (idx_in=%d)\n", conn->idx_in);
 
-            if (conn->wlen + conn->rlen > CONNECT_BUF_LEN) {
-                printf("ERROR: Buffer overflow! wlen=%d + rlen=%d > %d\n",
-                    conn->wlen, conn->rlen, CONNECT_BUF_LEN);
-                return 0;
-            }
+//             if (conn->idx_out + conn->idx_in > CONNECT_BUF_LEN) {
+//                 printf("ERROR: Buffer overflow! idx_out=%d + idx_in=%d > %d\n",
+//                     conn->idx_out, conn->idx_in, CONNECT_BUF_LEN);
+//                 return 0;
+//             }
 
-            // 追加而不是覆盖
-            memcpy(conn->wbuf + conn->wlen, conn->rbuf, conn->rlen);
-            conn->wlen += conn->rlen;
-            conn->rlen = 0;
-            memset(conn->rbuf, 0, CONNECT_BUF_LEN);
-        }
+//             // 追加而不是覆盖
+//             memcpy(conn->outbuf + conn->idx_out, conn->inbuf, conn->idx_in);
+//             conn->idx_out += conn->idx_in;
+//             conn->idx_in = 0;
+//             memset(conn->inbuf, 0, CONNECT_BUF_LEN);
+//         }
 
-        // 检查是否有完整的 JPEG（查找 FF D9 结束标记）
-        int jpeg_end = -1;
-        for (int i = 0; i < conn->wlen - 1; i++) {
-            if ((unsigned char)conn->wbuf[i] == 0xFF && 
-                (unsigned char)conn->wbuf[i+1] == 0xD9) {
-                jpeg_end = i + 2;  // JPEG 结束位置
-                break;
-            }
-        }
+//         // 检查是否有完整的 JPEG（查找 FF D9 结束标记）
+//         int jpeg_end = -1;
+//         for (int i = 0; i < conn->idx_out - 1; i++) {
+//             if ((unsigned char)conn->outbuf[i] == 0xFF && 
+//                 (unsigned char)conn->outbuf[i+1] == 0xD9) {
+//                 jpeg_end = i + 2;  // JPEG 结束位置
+//                 break;
+//             }
+//         }
 
-        if (jpeg_end > 0) {
-            // MJPEG 格式: --frame\r\nContent-Type: image/jpeg\r\nContent-Length: XXX\r\n\r\n[数据]
-            printf("Found complete JPEG frame: %d bytes\n", jpeg_end);
+//         if (jpeg_end > 0) {
+//             // MJPEG 格式: --frame\r\nContent-Type: image/jpeg\r\nContent-Length: XXX\r\n\r\n[数据]
+//             printf("Found complete JPEG frame: %d bytes\n", jpeg_end);
 
-            char frame_header[256];
-            int header_len = snprintf(frame_header, sizeof(frame_header),
-                        "--frame\r\n"
-                        "Content-Type: image/jpeg\r\n"
-                        "Content-Length: %d\r\n\r\n",
-                        jpeg_end);
+//             char frame_header[256];
+//             int header_len = snprintf(frame_header, sizeof(frame_header),
+//                         "--frame\r\n"
+//                         "Content-Type: image/jpeg\r\n"
+//                         "Content-Length: %d\r\n\r\n",
+//                         jpeg_end);
             
-            // A. 发送帧头
-            int sent_header = 0;
-            while(sent_header < header_len) {
-                int n = send(conn->fd, frame_header + sent_header, header_len - sent_header, 0);
-                if (n < 0) {
-                    if (errno == EAGAIN) { usleep(1000); continue; } // 忙等待
-                    conn->close(conn); return -1;
-                }
-                sent_header += n;
-            }
+//             // A. 发送帧头
+//             int sent_header = 0;
+//             while(sent_header < header_len) {
+//                 int n = send(conn->fd, frame_header + sent_header, header_len - sent_header, 0);
+//                 if (n < 0) {
+//                     if (errno == EAGAIN) { usleep(1000); continue; } // 忙等待
+//                     conn->close(conn); return -1;
+//                 }
+//                 sent_header += n;
+//             }
 
-            // B. 发送图片体
-            int sent_body = 0;
-            while (sent_body < jpeg_end) {
-                int n = send(conn->fd, conn->wbuf + sent_body, jpeg_end - sent_body, 0);
-                if (n < 0) {
-                    if (errno == EAGAIN) { usleep(1000); continue; }
-                    conn->close(conn); return -1;
-                }
-                sent_body += n;
-            }
+//             // B. 发送图片体
+//             int sent_body = 0;
+//             while (sent_body < jpeg_end) {
+//                 int n = send(conn->fd, conn->outbuf + sent_body, jpeg_end - sent_body, 0);
+//                 if (n < 0) {
+//                     if (errno == EAGAIN) { usleep(1000); continue; }
+//                     conn->close(conn); return -1;
+//                 }
+//                 sent_body += n;
+//             }
 
-            // C. 发送结尾换行
-            int sent_end = 0;
-            while (sent_end < 2) {
-                int n = send(conn->fd, "\r\n" + sent_end, 2 - sent_end, 0);
-                if (n < 0) {
-                    if (errno == EAGAIN) { usleep(1000); continue; }
-                    break;
-                }
-                sent_end += n;
-            }
+//             // C. 发送结尾换行
+//             int sent_end = 0;
+//             while (sent_end < 2) {
+//                 int n = send(conn->fd, "\r\n" + sent_end, 2 - sent_end, 0);
+//                 if (n < 0) {
+//                     if (errno == EAGAIN) { usleep(1000); continue; }
+//                     break;
+//                 }
+//                 sent_end += n;
+//             }
 
-            // 发送下一帧的边界，强制浏览器渲染当前帧
-            // Chrome 等浏览器常需要看到下一个 boundary 才会显示上一帧
-            // send(conn->fd, "--frame\r\n", 9, 0);
+//             // 发送下一帧的边界，强制浏览器渲染当前帧
+//             // Chrome 等浏览器常需要看到下一个 boundary 才会显示上一帧
+//             // send(conn->fd, "--frame\r\n", 9, 0);
 
-            // printf("Sent MJPEG frame: %d bytes to fd:%d\n", jpeg_end, conn->fd);
+//             // printf("Sent MJPEG frame: %d bytes to fd:%d\n", jpeg_end, conn->fd);
 
-            // 4. 移除缓冲区中已发送的数据
-            if (jpeg_end < conn->wlen) {
-                memmove(conn->wbuf, conn->wbuf + jpeg_end, conn->wlen - jpeg_end);
-                conn->wlen -= jpeg_end;
-                // printf("Remaining data: %d\n", conn->wlen);
-            } else {
-                conn->wlen = 0;
-            }
-        } else {
-            printf("jpeg end not found\n");
-        }
+//             // 4. 移除缓冲区中已发送的数据
+//             if (jpeg_end < conn->idx_out) {
+//                 memmove(conn->outbuf, conn->outbuf + jpeg_end, conn->idx_out - jpeg_end);
+//                 conn->idx_out -= jpeg_end;
+//                 // printf("Remaining data: %d\n", conn->idx_out);
+//             } else {
+//                 conn->idx_out = 0;
+//             }
+//         } else {
+//             printf("jpeg end not found\n");
+//         }
         
-        // 等待更多数据
-        set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
+//         // 等待更多数据
+//         set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+//         return 0;
 
-    } 
+//     } 
    
-    return 0;
-}
+//     return 0;
+// }
+/* 
+ *  让cam端直接封装好 jpg帧头帧尾
+ *  http——callback只把数据从inbuf --> outbuf
+ *  outbuf --> send
+ */
+int http_callback(struct connect* conn) 
+{
 
+
+}
 
 
 /************ helper *************/
@@ -247,7 +257,7 @@ static int http_response_status(struct connect* conn, int status_code) {
     }
 
     int body_len = strlen(body);
-    int ret = snprintf(conn->wbuf, CONNECT_BUF_LEN,
+    int ret = snprintf(conn->outbuf, CONNECT_BUF_LEN,
                     "HTTP/1.1 %d %s\r\n"    /* status_code, status_response */
                     "%s\r\n"                /* type */
                     "Content-Length: %d\r\n" /* body_len,  */

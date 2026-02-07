@@ -14,7 +14,7 @@
 #define BACKLOG     2048
 
 struct sockaddr_in server_addr;
-int iAddrLen = sizeof(struct sockaddr);
+int iAddidx_in = sizeof(struct sockaddr);
 
 void server_bind(int serverfd, struct sockaddr* server_addr);
 void set_sockaddr_in(struct sockaddr_in* server_addr);
@@ -31,7 +31,7 @@ int main (void) {
         if (listen(serverfd, BACKLOG) == -1)
             printf("listen");
 
-    int new_fd = accept(serverfd, (struct sockaddr *)&server_addr, &iAddrLen);
+    int new_fd = accept(serverfd, (struct sockaddr *)&server_addr, &iAddidx_in);
     if (new_fd == -1) {
         printf("get bad new_fd\n");
         return -1;

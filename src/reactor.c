@@ -35,7 +35,7 @@ int echo_callback(struct connect* conn);
 
 int epfd;
 struct sockaddr_in server_addr;
-int iAddrLen = sizeof(struct sockaddr);
+int iAddidx_in = sizeof(struct sockaddr);
 
 
 
@@ -76,7 +76,7 @@ int main (void) {
                 if (events[i].events & EPOLLIN) {
                     this->recv_func.recv_cb(this);
 
-                /* wbuf已经发送完，发送新的wbuf */
+                /* outbuf已经发送完，发送新的outbuf */
                 } else if (events[i].events & EPOLLOUT) {
                     this->send_cb(this);
                 }
@@ -92,9 +92,9 @@ int main (void) {
 int parse_serve_type(struct connect* conn) {
     int type = SERVE_ECHO;
 
-    if (strncmp(conn->rbuf, "GET ", 4) == 0) {
+    if (strncmp(conn->inbuf, "GET ", 4) == 0) {
         type = SERVE_HTTP;
-    } else if (strncmp(conn->rbuf, "SEND ", 5) == 0) {
+    } else if (strncmp(conn->inbuf, "SEND ", 5) == 0) {
         type = SERVE_GET_RESOURCE;
     } 
 
@@ -102,7 +102,7 @@ int parse_serve_type(struct connect* conn) {
 }
 
 int accept_callback(struct connect* conn) {
-    int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddrLen);
+    int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddidx_in);
     if (new_fd == -1) {
         printf("get bad new_fd\n");
         return -1;
@@ -115,16 +115,16 @@ int accept_callback(struct connect* conn) {
 }
 
 int recv_callback(struct connect* conn) {
-    /* 把数据接收到rbuf */
-    int to_copy = CONNECT_BUF_LEN - conn->rlen;
-    conn->rlen += recv(conn->fd, conn->rbuf + conn->rlen , to_copy, 0);
+    /* 把数据接收到inbuf */
+    int to_copy = CONNECT_BUF_LEN - conn->idx_in;
+    conn->idx_in += recv(conn->fd, conn->inbuf + conn->idx_in , to_copy, 0);
 
-    /* rlen == 0 表示对端正常关闭，应直接 close，不要看 errno。
-        只有 rlen < 0 才检查 errno == EAGAIN/EWOULDBLOCK。 */
-    if (conn->rlen == 0){
+    /* idx_in == 0 表示对端正常关闭，应直接 close，不要看 errno。
+        只有 idx_in < 0 才检查 errno == EAGAIN/EWOULDBLOCK。 */
+    if (conn->idx_in == 0){
         conn->close(conn);
         return -1;
-    } else if (conn->rlen < 0) {
+    } else if (conn->idx_in < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0;  // 继续等待
         } else {
@@ -133,10 +133,10 @@ int recv_callback(struct connect* conn) {
         }
     }
 
-    // conn->rbuf[conn->rlen] = '\0';
+    // conn->inbuf[conn->idx_in] = '\0';
 
     if (conn->serve_type == SERVE_NOT_INIT || conn->serve_type == SERVE_HTTP) {
-        // 解析rlen，GET-->HTTP/ SEND-->recv from cam/ echo
+        // 解析idx_in，GET-->HTTP/ SEND-->recv from cam/ echo
         // 生成 HTTP 响应(初始化 file_fd 和 remaining)
         int serve_type = parse_serve_type(conn);
         conn->serve_type = serve_type;
@@ -162,24 +162,24 @@ int recv_callback(struct connect* conn) {
     
     conn->send_cb(conn);
     return 0;
-    // printf("fd:%d msg:%s\n",conn->fd,conn->rbuf);
+    // printf("fd:%d msg:%s\n",conn->fd,conn->inbuf);
 }
 
 int echo_callback(struct connect* conn) {
-    strncpy(conn->wbuf, conn->rbuf, conn->rlen);
-    conn->wlen = conn->rlen;
-    printf("%d Get Msg: %s\n", conn->fd, conn->wbuf);
-    int send_cnt = send(conn->fd, conn->wbuf, conn->wlen, 0);
-    conn->wlen -= send_cnt;
+    strncpy(conn->outbuf, conn->inbuf, conn->idx_in);
+    conn->idx_out = conn->idx_in;
+    printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
+    int send_cnt = send(conn->fd, conn->outbuf, conn->idx_out, 0);
+    conn->idx_out -= send_cnt;
 
 
-    if (conn->wlen != 0) {
-        memmove(conn->wbuf, conn->wbuf + send_cnt, conn->wlen);
+    if (conn->idx_out != 0) {
+        memmove(conn->outbuf, conn->outbuf + send_cnt, conn->idx_out);
     } else {
-        memset(conn->wbuf, 0, sizeof(conn->wbuf));
+        memset(conn->outbuf, 0, sizeof(conn->outbuf));
         
     }
-    return conn->wlen;
+    return conn->idx_out;
 }
 
 void close_callback(struct connect* conn) {
@@ -195,8 +195,8 @@ void close_callback(struct connect* conn) {
 /******************************* epoll  *******************************/
 void connect_init(struct connect* conn, int fd) {
     conn->fd = fd;
-    conn->rlen = 0;
-    conn->wlen = 0;
+    conn->idx_in = 0;
+    conn->idx_out = 0;
     conn->recv_func.recv_cb = recv_callback;
     conn->close = close_callback;
     conn->serve_type = SERVE_NOT_INIT;

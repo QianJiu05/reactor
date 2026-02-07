@@ -29,10 +29,10 @@ struct connect{
     int serve_type;
 
     /* 缓冲区 */
-    char rbuf[CONNECT_BUF_LEN];
-    int rlen;
-    char wbuf[CONNECT_BUF_LEN];
-    int wlen;
+    char inbuf[CONNECT_BUF_LEN];
+    int idx_in;
+    char outbuf[CONNECT_BUF_LEN];
+    int idx_out;
 
     /* 回调函数 */
     union recv_func
