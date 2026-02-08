@@ -168,6 +168,7 @@ int recv_callback(struct connect* conn) {
 int echo_callback(struct connect* conn) {
     strncpy(conn->outbuf, conn->inbuf, conn->idx_in);
     conn->idx_out = conn->idx_in;
+    conn->idx_in = 0;
     printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
     int send_cnt = send(conn->fd, conn->outbuf, conn->idx_out, 0);
     conn->idx_out -= send_cnt;
@@ -177,7 +178,6 @@ int echo_callback(struct connect* conn) {
         memmove(conn->outbuf, conn->outbuf + send_cnt, conn->idx_out);
     } else {
         memset(conn->outbuf, 0, sizeof(conn->outbuf));
-        
     }
     return conn->idx_out;
 }
