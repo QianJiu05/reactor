@@ -104,7 +104,10 @@ int parse_serve_type(struct connect* conn) {
 int accept_callback(struct connect* conn) {
     int new_fd = accept(conn->fd, (struct sockaddr *)&server_addr, &iAddidx_in);
     if (new_fd == -1) {
-        printf("get bad new_fd\n");
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return 0; // 非阻塞下暂时无连接
+        }
+        perror("accept");
         return -1;
     }
     printf("get new fd:%d\n",new_fd);
@@ -170,16 +173,16 @@ int echo_callback(struct connect* conn) {
     conn->idx_out = conn->idx_in;
     conn->idx_in = 0;
     printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
-    int send_cnt = send(conn->fd, conn->outbuf, conn->idx_out, 0);
-    conn->idx_out -= send_cnt;
+    // int send_cnt = send(conn->fd, conn->outbuf, conn->idx_out, 0);
+    // conn->idx_out -= send_cnt;
 
 
-    if (conn->idx_out != 0) {
-        memmove(conn->outbuf, conn->outbuf + send_cnt, conn->idx_out);
-    } else {
-        memset(conn->outbuf, 0, sizeof(conn->outbuf));
-    }
-    return conn->idx_out;
+    // if (conn->idx_out != 0) {
+    //     memmove(conn->outbuf, conn->outbuf + send_cnt, conn->idx_out);
+    // } else {
+    //     memset(conn->outbuf, 0, sizeof(conn->outbuf));
+    // }
+    // return conn->idx_out;
 }
 
 void close_callback(struct connect* conn) {
