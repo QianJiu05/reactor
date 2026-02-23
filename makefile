@@ -14,7 +14,8 @@ HEADERS = 	config.h \
 			inc/callback.h
 
 
-SRC_FILES = src/reactor.c \
+SRC_FILES = example/main.c\
+			src/reactor.c \
 			src/connect_pool.c \
 			src/http_handler.c \
 			src/recv_resource.c \
@@ -23,7 +24,7 @@ SRC_FILES = src/reactor.c \
 			src/accept.c\
 			src/recv.c\
 			src/callback.c\
-			src/main.c
+			
 			
 
 reactor: $(SRC_FILES) $(HEADERS)

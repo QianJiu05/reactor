@@ -12,6 +12,7 @@
 #include "http_handler.h"
 #include "http_helper.h"
 #include "reactor.h"
+#include "epoll.h"
 
 
 #define LIBHTTP_REQUEST_MAX_SIZE CONNECT_BUF_LEN
@@ -200,7 +201,7 @@ int http_callback(struct connect* conn) {
         }
         
         // 等待更多数据
-        set_epoll(EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
         return 0;
 
     } 

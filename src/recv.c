@@ -7,26 +7,36 @@
 #include <errno.h>
 #include <string.h>
 
-
+#include "connect_pool.h" //这个要声明在callback h前面，不然会警告cb类型不兼容
 #include "callback.h"
 #include "recv_resource.h"
-#include "connect_pool.h"
 #include "http_handler.h"
 #include "recv.h"
 
 
 
 /****************************** callback *******************************/
+// int parse_serve_type(struct connect* conn) {
+//     int type = SERVE_ECHO;
+
+//     if (strncmp(conn->inbuf, "GET ", 4) == 0) {
+//         type = SERVE_HTTP;
+//     } else if (strncmp(conn->inbuf, "SEND ", 5) == 0) {
+//         type = SERVE_GET_RESOURCE;
+//     } 
+
+//     return type;
+// }
+
 int parse_serve_type(struct connect* conn) {
-    int type = SERVE_ECHO;
 
     if (strncmp(conn->inbuf, "GET ", 4) == 0) {
-        type = SERVE_HTTP;
+        return SERVE_HTTP;
     } else if (strncmp(conn->inbuf, "SEND ", 5) == 0) {
-        type = SERVE_GET_RESOURCE;
+        return SERVE_GET_RESOURCE;
     } 
 
-    return type;
+    return SERVE_ECHO;
 }
 
 

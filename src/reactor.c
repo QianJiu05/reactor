@@ -19,6 +19,7 @@
 #include "recv_resource.h"
 #include "server_init.h"
 #include "config.h"
+#include "epoll.h"
 
 struct reactor sub_reactor[NUM_OF_REACTOR];
 
@@ -67,7 +68,7 @@ bool init_sub_reactor(void) {
 
 
 struct reactor* get_next_reactor(void){
-    static idx = 0;
+    static int idx = 0;
     idx++;
     if (idx >= NUM_OF_REACTOR) idx = 0;
 
