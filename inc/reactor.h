@@ -11,12 +11,12 @@
 struct reactor{
     pthread_t tid;
     int epfd;          
-    int event_fd;
+    // int event_fd;
     struct epoll_event events[MAX_EVENTS]; 
 };
 
 
-bool init_sub_reactor(void);
+void init_sub_reactor(void);
 void* func_reactor (void*);
 struct reactor* get_next_reactor(void);
 void patch_connect(struct reactor* target, int fd);

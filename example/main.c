@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <semaphore.h>
+#include <time.h>
 
 #include "config.h"
 #include "connect_pool.h"
@@ -21,34 +23,39 @@
 #include "epoll.h"
 #include "accept.h"
 
-struct reactor main_reactor;
+static int sem_wait_timeout(sem_t *sem, int timeout_ms);
+
+static struct reactor main_reactor;
+static struct epoll_event *events = main_reactor.events;
+
+sem_t sub_init;
 
 int main (void) {
     connect_pool_init();
 
     int serverfd;
 
-    struct sockaddr *server_addr = (struct sockaddr *)get_sockaddr_in();
+    struct sockaddr_in *server_addr = get_sockaddr_in();
     serverfd = server_init(serverfd);
     // set_sockaddr_in(&server_addr);
     set_sockaddr_in(server_addr);
     // server_bind(serverfd, &server_addr);
-    server_bind(serverfd, server_addr);
+    server_bind(serverfd);
+    
+
+    sem_init(&sub_init, 0, 0);
+    
+    //创建子线程运行sub reactor
+    init_sub_reactor();
+    sem_wait_timeout(&sub_init, 500);
     
     /* 开始监听 */
     if (listen(serverfd, BACKLOG) == -1)
         printf("listen");
 
-    //创建子线程运行sub reactor
-    if (!init_sub_reactor()) {
-        printf("sub reactor run failed\n");
-        exit(-1);
-    }
-
-    struct epoll_event *events = main_reactor.events;
-
     main_reactor.epfd = epoll_create(1);
-    set_epoll(&main_reactor, EPOLLIN | EPOLLOUT, EPOLL_CTL_ADD, serverfd);
+    /* 主线程只监听输入：新事件 */
+    set_epoll(&main_reactor, EPOLLIN, EPOLL_CTL_ADD, serverfd);
 
     while (1)
     {
@@ -71,7 +78,19 @@ int main (void) {
 }
 
 
-
+// 等待指定毫秒，成功返回0，超时返回-1
+int sem_wait_timeout(sem_t *sem, int timeout_ms) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeout_ms / 1000;
+    ts.tv_nsec += (timeout_ms % 1000) * 1000000;
+    // 处理进位
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
+    return sem_timedwait(sem, &ts);
+}
 
 
 

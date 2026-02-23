@@ -17,8 +17,7 @@ struct http_context {
     bool stream_mode;  
 };
 
-/* 相机端: SEND <目标http_fd>
-    例如:   SEND 7 */
+/* 相机端: SEND <目标http_fd>  eg: SEND 7 */
 struct cam_terminal {
     // int64_t remain;
     // char name[64];
@@ -39,7 +38,7 @@ struct connect{
     /* 回调函数 */
     union recv_func
     {
-        int (*accept_cb)(struct connect*);
+        int (*accept_cb)(int);
         int (*recv_cb)(struct connect*);
     }recv_func;
     int (*send_cb)(struct connect*);
@@ -51,6 +50,7 @@ struct connect{
         struct cam_terminal cam;
     }app;//应用层内容
 };
+
 struct connect_node{
     struct connect pool[NUM_OF_CONNECTOR];
     struct connect_node* next;

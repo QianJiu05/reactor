@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <semaphore.h>
 
 #include "config.h"
 #include "connect_pool.h"
@@ -21,7 +22,9 @@
 #include "config.h"
 #include "epoll.h"
 
-struct reactor sub_reactor[NUM_OF_REACTOR];
+extern sem_t sub_init;
+
+static struct reactor sub_reactor[NUM_OF_REACTOR];
 
 /* epoll */
 // void connect_init(struct connect* conn, int fd) ;
@@ -53,16 +56,19 @@ void* func_reactor (void* arg) {
     }
 }
 
-bool init_sub_reactor(void) {
+void init_sub_reactor(void) {
+    memset(sub_reactor, 0, sizeof sub_reactor);
     for (int i = 0; i < NUM_OF_REACTOR; i++) {
         struct reactor* sub =  &sub_reactor[i];
         if (0 != pthread_create(&sub->tid, NULL, func_reactor, sub)) {
             printf("thread create failed\n");
-            return false;   
+            // return false;   
+            exit(-1);
         }
     }
-    printf("finish\n");
-    return true;
+    // printf("finish\n");
+    sem_post(&sub_init);
+    // return true;
 }
 
 

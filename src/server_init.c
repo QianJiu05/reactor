@@ -6,8 +6,8 @@
 #include <string.h>
 
 #include "reactor.h"
-#include "connect_pool.h"
 #include "accept.h"
+#include "connect_pool.h"
 #include "epoll.h"
 
 struct sockaddr_in server_addr;
@@ -38,7 +38,7 @@ void set_sockaddr_in(void) {
 
 /* 2.绑定socket与端口号 */
 void server_bind(int serverfd) {
-    if (bind(serverfd, &server_addr,sizeof(struct sockaddr)) == -1) {
+    if (bind(serverfd, (struct sockaddr *)&server_addr,sizeof(struct sockaddr)) == -1) {
         printf("bind");
     }
 }
