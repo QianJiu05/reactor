@@ -5,22 +5,11 @@
 #include <sys/types.h>
 
 #include "config.h"
-
-struct http_context {
-    int file_fd;
-    off_t remain;       // 还需要从file_fd中读多少字节
-    bool header_sent;   
-    int status_code;    // 200, 404 ...
-    int content_type;   // jpg//text//...
-    bool keep_alive;    // Connection: close -- Connection: keep-alive
-    char path[256];     //请求路径
-    bool stream_mode;  
-};
+#include "struct_http.h"
 
 /* 相机端: SEND <目标http_fd>  eg: SEND 7 */
 struct cam_terminal {
-    // int64_t remain;
-    // char name[64];
+    char admin[64];
     int dest;// <目标http的fd> get_connector(fd);
 };
 
@@ -64,5 +53,6 @@ struct connect_pool{
 /* structure */
 void connect_pool_init(void);
 struct connect* get_connector(int);
+void connect_init(struct connect* conn, int fd);
 
 #endif

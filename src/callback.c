@@ -14,7 +14,7 @@ int print_callback(struct connect* conn) {
     conn->outlen = conn->inlen;
     
     // printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
-    printf("sub:%d fd:%d Get Msg: %s\n", conn->sub->tid, conn->fd, conn->outbuf);
+    printf("sub:%ld fd:%d Get Msg: %s\n", conn->sub->tid, conn->fd, conn->outbuf);
 
     conn->outlen = 0;
     conn->inlen = 0;

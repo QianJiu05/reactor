@@ -68,6 +68,7 @@ int main (void) {
 
                 /* 把client_fd分发给sub_reactor */
                 struct reactor* target = get_next_reactor();
+                // printf("get sub:%ld\n",target->tid);
                 patch_connect(target, client_fd);
             } 
         }
