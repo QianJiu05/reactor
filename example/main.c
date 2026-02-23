@@ -41,7 +41,6 @@ int main (void) {
     set_sockaddr_in(server_addr);
     // server_bind(serverfd, &server_addr);
     server_bind(serverfd);
-    
 
     sem_init(&sub_init, 0, 0);
     

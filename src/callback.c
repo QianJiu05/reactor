@@ -7,15 +7,17 @@
 
 #include "connect_pool.h"
 #include "epoll.h"
-
+#include "reactor.h"
 int print_callback(struct connect* conn) {
+
     strncpy(conn->outbuf, conn->inbuf, conn->inlen);
     conn->outlen = conn->inlen;
-    printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
+    
+    // printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
+    printf("sub:%d fd:%d Get Msg: %s\n", conn->sub->tid, conn->fd, conn->outbuf);
 
     conn->outlen = 0;
     conn->inlen = 0;
-
 
     memset(conn->outbuf, 0, sizeof(conn->outbuf));
     return 0;

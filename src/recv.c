@@ -13,21 +13,6 @@
 #include "http_handler.h"
 #include "recv.h"
 
-
-
-/****************************** callback *******************************/
-// int parse_serve_type(struct connect* conn) {
-//     int type = SERVE_ECHO;
-
-//     if (strncmp(conn->inbuf, "GET ", 4) == 0) {
-//         type = SERVE_HTTP;
-//     } else if (strncmp(conn->inbuf, "SEND ", 5) == 0) {
-//         type = SERVE_GET_RESOURCE;
-//     } 
-
-//     return type;
-// }
-
 int parse_serve_type(struct connect* conn) {
 
     if (strncmp(conn->inbuf, "GET ", 4) == 0) {
@@ -38,7 +23,6 @@ int parse_serve_type(struct connect* conn) {
 
     return SERVE_ECHO;
 }
-
 
 int recv_callback(struct connect* conn) {
     /* 把数据接收到inbuf */
