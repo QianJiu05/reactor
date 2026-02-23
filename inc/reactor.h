@@ -1,10 +1,7 @@
 #ifndef __REACTOR_H__
 #define __REACTOR_H__
 
-#define SERVE_NOT_INIT     -1
-#define SERVE_ECHO          0
-#define SERVE_HTTP          1
-#define SERVE_GET_RESOURCE  2
+
 
 #include <sys/epoll.h>
 #include <pthread.h>
@@ -15,14 +12,14 @@ struct reactor{
     pthread_t tid;
     int epfd;          
     int event_fd;
-    struct connect_pool pool;
-
-
+    struct epoll_event events[MAX_EVENTS]; 
 };
 
-void connect_init(struct connect* conn, int fd);
-void set_epoll(int EVENT, int OPERATION, int fd);
-int accept_callback(struct connect* conn);
+
+bool init_sub_reactor(void);
+void* func_reactor (void*);
+struct reactor* get_next_reactor(void);
+void patch_connect(struct reactor* target, int fd);
 
 void reactor_init(struct reactor*);
 #endif

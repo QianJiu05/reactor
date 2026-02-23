@@ -28,6 +28,7 @@ struct cam_terminal {
 struct connect{
     int fd;
     int serve_type;
+    struct reactor* sub;
 
     /* 缓冲区 */
     char inbuf[CONNECT_BUF_LEN];
@@ -61,7 +62,7 @@ struct connect_pool{
 };
 
 /* structure */
-void connect_pool_init(struct reactor*);
-struct connect* get_connector(struct reactor*, int);
+void connect_pool_init(void);
+struct connect* get_connector(int);
 
 #endif

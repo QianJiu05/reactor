@@ -13,7 +13,7 @@
 #include "recv_resource.h"
 #include "reactor.h"
 #include "connect_pool.h"
-
+#include "epoll.h"
 /* 
     get_resource_callback接收相机客户端的数据
     1. write (conn->inbuf ----> dest->inbuf)
@@ -66,7 +66,8 @@ int get_resource_callback(struct connect* conn) {
     }
 
     // 通知 epoll 目标连接可以发送数据
-    set_epoll(EPOLLOUT, EPOLL_CTL_MOD, dest->fd);
+    //用main还是sub?
+    set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, dest->fd);
     
     return to_copy;
 }
