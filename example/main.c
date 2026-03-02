@@ -65,7 +65,7 @@ int main (void) {
             if (serverfd == events[i].data.fd) {
                 /*  listen到新连接，通过accept(serverfd)建立新连接
                     批量 accept，直到返回 EAGAIN         */
-                while (1) {
+                // while (1) {
                     int client_fd = accept_callback(serverfd);
                     if (client_fd == -1) {
                         break;  // 没有更多连接了
@@ -73,7 +73,7 @@ int main (void) {
                     /* 把client_fd分发给sub_reactor */
                     struct reactor* target = get_next_reactor();
                     patch_connect(target, client_fd);
-                }
+                // }
             }
 
         }

@@ -34,14 +34,20 @@ void connect_init(struct connect* conn, int fd) {
 
 /*************** structure ***************/
 static struct connect_node* alloc_new_pool(void) {
+#ifdef DEBUG    
     printf("alloc new pool\n");
+#endif
+
     struct connect_node* new = malloc(sizeof(struct connect_node));
     if (new == NULL) {
         printf("alloc new pool err\n");
         return NULL;
     }
 
-    for (int i = 0; i < )
+    for (int i = 0; i < NUM_OF_CONNECTOR; i++) {
+        new->pool[i].node = new;
+    }
+    
     memset(new, 0, sizeof(struct connect_node));
     pool.last->next = new;
     pool.last = new;

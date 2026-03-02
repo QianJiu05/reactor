@@ -1,4 +1,5 @@
-
+/* debug */
+#define DEBUG
 /* 网络连接 */
 #define SERVER_PORT 8888
 // #define BACKLOG     2048

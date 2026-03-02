@@ -15,7 +15,6 @@ int print_callback(struct connect* conn) {
     
     // printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
     printf("sub:%ld fd:%d Get Msg: %s\n", conn->sub->tid, conn->fd, conn->outbuf);
-
     conn->outlen = 0;
     conn->inlen = 0;
 
@@ -27,7 +26,10 @@ int print_callback(struct connect* conn) {
 int echo_callback(struct connect* conn) {
     strncpy(conn->outbuf, conn->inbuf, conn->inlen);
     conn->outlen = conn->inlen;
+#ifdef DEBUG    
     printf("%d Get Msg: %s\n", conn->fd, conn->outbuf);
+#endif
+
     int send_cnt = send(conn->fd, conn->outbuf, conn->outlen, 0);
     conn->outlen -= send_cnt;
     conn->inlen -= send_cnt;
@@ -41,7 +43,9 @@ int echo_callback(struct connect* conn) {
 }
 
 void close_callback(struct connect* conn) {
+#ifdef DEBUG    
     printf("close fd:%d\n",conn->fd);
+#endif
     set_epoll(conn->sub, 0, EPOLL_CTL_DEL,conn->fd);
     conn->state = STATE_CLOSED;
     conn->node->using--;

@@ -20,7 +20,9 @@ int accept_callback(int fd) {
         printf("get bad new_fd\n");
         return -1;
     }
+#ifdef DEBUG    
     printf("get new fd:%d\n",new_fd);
+#endif
 
     return new_fd;
 }

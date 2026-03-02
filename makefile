@@ -24,7 +24,8 @@ SRC_FILES = example/main.c\
 			src/http/http_handler.c \
 			src/http/recv_resource.c 
 			
-			
+INC_FLAG = -Iinc -Iinc/http -I. 
+# DEFINE_FLAG = -DDEBUG
 
 reactor: $(SRC_FILES) $(HEADERS)
-	gcc -o reactor $(SRC_FILES) -Iinc -Iinc/http -I. 
+	gcc -o reactor $(SRC_FILES) $(INC_FLAG) 

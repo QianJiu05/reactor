@@ -85,5 +85,6 @@ void patch_connect(struct reactor* target, int fd) {
     struct connect* connector = get_connector(fd);
     connect_init(connector, fd);
     connector->sub = target;
+    connector->node->using++;
     set_epoll(target, EPOLLIN, EPOLL_CTL_ADD, fd);
 }
