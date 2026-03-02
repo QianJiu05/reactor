@@ -8,16 +8,23 @@
 #include "reactor.h"
 #include "recv.h"
 #include "callback.h"
+
 struct connect_pool pool;
+
 
 /******************************* epoll  *******************************/
 void connect_init(struct connect* conn, int fd) {
+    if (conn->state == STATE_CLOSED) {
+        memset(conn, 0, sizeof(struct connect));
+    }
     conn->fd = fd;
     conn->inlen = 0;
     conn->outlen = 0;
     conn->recv_func.recv_cb = recv_callback;
     conn->close = close_callback;
     conn->serve_type = SERVE_NOT_INIT;
+
+    conn->state = STATE_USING;
 
     // 设置为非阻塞模式，没消息直接返回
     // 如果是阻塞，send/recv会在没有消息时一直阻塞等待，直到有消息

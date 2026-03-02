@@ -7,6 +7,11 @@
 #include "config.h"
 #include "struct_http.h"
 
+
+#define STATE_CLOSED 0
+#define STATE_USING 1
+
+
 /* 相机端: SEND <目标http_fd>  eg: SEND 7 */
 struct cam_terminal {
     char admin[64];
@@ -15,6 +20,7 @@ struct cam_terminal {
 
 struct connect{
     int fd;
+    int state;
     int serve_type;
     struct reactor* sub;
 

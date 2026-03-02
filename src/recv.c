@@ -61,8 +61,8 @@ int recv_callback(struct connect* conn) {
                 break;
 
             case SERVE_ECHO:
-                // conn->send_cb = echo_callback;
-                conn->send_cb = print_callback;
+                conn->send_cb = echo_callback;
+                // conn->send_cb = print_callback;
 
                 break;
 

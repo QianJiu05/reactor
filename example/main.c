@@ -71,6 +71,20 @@ int main (void) {
                 // printf("get sub:%ld\n",target->tid);
                 patch_connect(target, client_fd);
             } 
+
+
+    // if (serverfd == events[i].data.fd) {
+    //     // 批量 accept，直到返回 EAGAIN
+    //     while (1) {
+    //         int client_fd = accept_callback(serverfd);
+    //         if (client_fd == -1) {
+    //             break;  // 没有更多连接了
+    //         }
+    //         struct reactor* target = get_next_reactor();
+    //         patch_connect(target, client_fd);
+    //     }
+    // }
+
         }
         
     }	
