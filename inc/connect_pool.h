@@ -23,6 +23,7 @@ struct connect{
     int state;
     int serve_type;
     struct reactor* sub;
+    struct connect_node* node;
 
     /* 缓冲区 */
     char inbuf[CONNECT_BUF_LEN];
@@ -48,6 +49,7 @@ struct connect{
 
 struct connect_node{
     struct connect pool[NUM_OF_CONNECTOR];
+    int using;
     struct connect_node* next;
 };
 struct connect_pool{

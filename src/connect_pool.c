@@ -40,6 +40,8 @@ static struct connect_node* alloc_new_pool(void) {
         printf("alloc new pool err\n");
         return NULL;
     }
+
+    for (int i = 0; i < )
     memset(new, 0, sizeof(struct connect_node));
     pool.last->next = new;
     pool.last = new;

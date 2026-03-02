@@ -44,6 +44,7 @@ void close_callback(struct connect* conn) {
     printf("close fd:%d\n",conn->fd);
     set_epoll(conn->sub, 0, EPOLL_CTL_DEL,conn->fd);
     conn->state = STATE_CLOSED;
+    conn->node->using--;
     close(conn->fd);
     // memset(conn, 0, sizeof(struct connect));
 }

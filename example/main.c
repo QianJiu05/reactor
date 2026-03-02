@@ -63,27 +63,18 @@ int main (void) {
 
         for (int i = 0; i < nready; i++) {
             if (serverfd == events[i].data.fd) {
-                /* listen到新连接，通过accept(serverfd)建立新连接 */
-                int client_fd = accept_callback(serverfd);
-
-                /* 把client_fd分发给sub_reactor */
-                struct reactor* target = get_next_reactor();
-                // printf("get sub:%ld\n",target->tid);
-                patch_connect(target, client_fd);
-            } 
-
-
-    // if (serverfd == events[i].data.fd) {
-    //     // 批量 accept，直到返回 EAGAIN
-    //     while (1) {
-    //         int client_fd = accept_callback(serverfd);
-    //         if (client_fd == -1) {
-    //             break;  // 没有更多连接了
-    //         }
-    //         struct reactor* target = get_next_reactor();
-    //         patch_connect(target, client_fd);
-    //     }
-    // }
+                /*  listen到新连接，通过accept(serverfd)建立新连接
+                    批量 accept，直到返回 EAGAIN         */
+                while (1) {
+                    int client_fd = accept_callback(serverfd);
+                    if (client_fd == -1) {
+                        break;  // 没有更多连接了
+                    }
+                    /* 把client_fd分发给sub_reactor */
+                    struct reactor* target = get_next_reactor();
+                    patch_connect(target, client_fd);
+                }
+            }
 
         }
         
