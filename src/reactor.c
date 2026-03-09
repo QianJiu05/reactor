@@ -31,7 +31,8 @@ static struct reactor sub_reactor[NUM_OF_REACTOR];
 
 void* func_reactor (void* arg) {
     struct reactor* sub = (struct reactor*) arg;
-    struct epoll_event *events = sub->events;
+    // struct epoll_event *events = sub->events;
+    struct epoll_event *events = malloc(sizeof(struct epoll_event)* MAX_EVENTS);
 
     sub->epfd = epoll_create(1);
 

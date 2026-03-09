@@ -6,13 +6,14 @@
 #include <sys/epoll.h>
 #include <pthread.h>
 #include "connect_pool.h"
+#include <sys/epoll.h>
 
 
 struct reactor{
     pthread_t tid;
     int epfd;          
     // int event_fd;
-    struct epoll_event events[MAX_EVENTS]; 
+    // struct epoll_event events[MAX_EVENTS]; 
 };
 
 
