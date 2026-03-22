@@ -22,7 +22,8 @@ SRC_FILES = example/main.c\
 			src/recv.c\
 			src/callback.c\
 			src/http/http_handler.c \
-			src/http/recv_resource.c 
+			src/http/recv_resource.c \
+			src/http/protocal.h
 			
 INC_FLAG = -Iinc -Iinc/http -I. 
 # DEFINE_FLAG = -DDEBUG

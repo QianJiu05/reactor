@@ -11,7 +11,6 @@
 
 struct connect_pool pool;
 
-
 /******************************* epoll  *******************************/
 void connect_init(struct connect* conn, int fd) {
     if (conn->state == STATE_CLOSED) {

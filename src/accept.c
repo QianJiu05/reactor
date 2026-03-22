@@ -17,6 +17,9 @@ int accept_callback(int fd) {
     static int iAddinlen = sizeof(server_addr);
     int new_fd = accept(fd, (struct sockaddr *)server_addr, &iAddinlen);
     if (new_fd == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -1;//没有更多连接
+        }
         printf("get bad new_fd\n");
         return -1;
     }

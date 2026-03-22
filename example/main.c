@@ -33,7 +33,9 @@ static struct epoll_event *events = &main_ev;
 sem_t sub_init;
 
 int main (void) {
+    printf("1\n");
     connect_pool_init();
+    printf("1\n");
 
     int serverfd;
 
@@ -57,6 +59,7 @@ int main (void) {
     main_reactor.epfd = epoll_create(1);
     /* 主线程只监听输入：新事件 */
     set_epoll(&main_reactor, EPOLLIN, EPOLL_CTL_ADD, serverfd);
+    printf("1\n");
 
     while (1)
     {
