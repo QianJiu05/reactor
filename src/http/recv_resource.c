@@ -55,7 +55,7 @@ int get_resource_callback(struct connect* conn) {
     if (to_copy < conn->inlen) {
         // 还有数据未复制，移动到缓冲区前面
         // memmove(conn->inbuf, conn->inbuf + to_copy, conn->inlen - to_copy);
-        memmove(conn->inbuf, conn->inbuf + to_copy, to_copy);
+        memmove(conn->inbuf, conn->inbuf + to_copy, conn->inlen - to_copy);
         conn->inlen -= to_copy;
         printf("Buffered %d bytes in camera fd:%d\n", conn->inlen, conn->fd);
         // 目标缓冲区有空间后，会再次调用这个函数
@@ -67,7 +67,7 @@ int get_resource_callback(struct connect* conn) {
 
     // 通知 epoll 目标连接可以发送数据
     //用main还是sub?
-    set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, dest->fd);
+    set_epoll(dest->sub, EPOLLOUT, EPOLL_CTL_MOD, dest->fd);
     
     return to_copy;
 }

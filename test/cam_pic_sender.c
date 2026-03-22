@@ -42,7 +42,7 @@ int main (void) {
         return 1;
     }
     printf("1\n");
-    char* send_header = "SEND 7";
+    char* send_header = "SEND 7\r\n";
     send(fd,send_header, strlen(send_header), 0);
 
     printf("2\n");
@@ -70,17 +70,22 @@ int main (void) {
 
     // memset(buffer, BUFLEN, 0);
     struct frame_header header1,header2;
+    memset(&header1, 0, sizeof(header1));
     header1.magic = PROTO_MAGIC;
     header1.version = PROTO_VERSION;
-    header1.jpeg_len = len1;
-    header1.checksum = calc_checksum(picture,len1+sizeof(struct frame_header));
-    pack_frame(buffer,&header1,sizeof(struct frame_header));
-    len1 = snprintf(buffer, BUFFER_SIZE,picture);
-    
+    header1.jpeg_len = (uint32_t)len1;
+    // checksum: 先将 checksum 字段置 0，再对 header + jpeg_data 累加
+    uint32_t sum = calc_checksum((const uint8_t*)&header1, sizeof(struct frame_header));
+    sum += calc_checksum((const uint8_t*)picture, (uint32_t)len1);
+    header1.checksum = sum;
+    // 打包: [frame_header][jpeg_data] 连续存入 buffer
+    pack_frame(buffer, &header1, sizeof(struct frame_header));
+    memcpy(buffer + sizeof(struct frame_header), picture, len1);
+    int total_len = (int)sizeof(struct frame_header) + len1;
 
 
     while(1) {
-        send(fd, buffer, len1, 0);
+        send(fd, buffer, total_len, 0);
         printf("sended\n");
         usleep(50000);
         // send(new_fd,buffer2,len2,0);

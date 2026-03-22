@@ -76,23 +76,36 @@ int generate_http_response(struct connect* conn)
     return 0;
 }
 
-uint8_t sendbuf[CONNECT_BUF_LEN];
+#define MJPEG_SENDBUF_SIZE (512 * 1024)  // 512KB，与 CONNECT_BUF_LEN 保持一致
+static uint8_t sendbuf[MJPEG_SENDBUF_SIZE];
 struct frame_header local_frame;
 
 static int pack_jpg(uint8_t* sendbuf, uint8_t* rawbuf, int buflen) {
     int len;
-    len = snprintf(sendbuf, CONNECT_BUF_LEN, 
+    len = snprintf((char*)sendbuf, MJPEG_SENDBUF_SIZE,
                         "--frame\r\n"
                         "Content-Type: image/jpeg\r\n"
-                        "Content-Length: %d\r\n\r\n", 
+                        "Content-Length: %d\r\n\r\n",
                         (int)buflen);
-    if (len > 0 && len + buflen + 2 <= CONNECT_BUF_LEN) {
-        memcpy(sendbuf + len, rawbuf, buflen);
-        len += buflen;
-        memcpy(sendbuf + len, "\r\n", 2);
-        len += 2;
+    printf("[pack_jpg] header_len=%d jpeg_len=%d total_need=%d buf_size=%d\n",
+           len, buflen, len + buflen + 2, MJPEG_SENDBUF_SIZE);
+
+    if (len <= 0) {
+        printf("[pack_jpg] snprintf failed\n");
+        return -1;
+    }
+    if (len + buflen + 2 > MJPEG_SENDBUF_SIZE) {
+        printf("[pack_jpg] ERROR: buffer too small! need=%d have=%d\n",
+               len + buflen + 2, MJPEG_SENDBUF_SIZE);
+        return -1;
     }
 
+    memcpy(sendbuf + len, rawbuf, buflen);
+    len += buflen;
+    memcpy(sendbuf + len, "\r\n", 2);
+    len += 2;
+
+    printf("[pack_jpg] packed total=%d\n", len);
     return len;
 }
 
@@ -100,106 +113,206 @@ static int pack_jpg(uint8_t* sendbuf, uint8_t* rawbuf, int buflen) {
  */
 int http_callback(struct connect* conn) 
 {
-    if ((uint16_t)conn->inbuf[0] == PROTO_MAGIC) {
-        if (!depack_frame(conn->inbuf, &local_frame)) {
-            printf("depack failed\n");
-            return 0;
-        } 
-    } else {
+    // === 入口 debug ===
+    printf("[http_cb] fd=%d inlen=%d outlen=%d header_sent=%d\n",
+           conn->fd, conn->inlen, conn->outlen, conn->app.http.header_sent);
+
+    if (!conn->app.http.header_sent) {
+        printf("[http_cb] WARNING: header not sent yet, skip\n");
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
         return 0;
     }
-    
-    /* 把inbuf里面的frame抛弃掉，然后取frame.jpeg_len长度的jpg */
-    int frame_len = sizeof(struct frame_header);
-    memmove(conn->inbuf, conn->inbuf + frame_len, frame_len);
-    conn->inlen -= frame_len;
 
-    int to_copy = pack_jpg(sendbuf, conn->inbuf, local_frame.jpeg_len);
-    int res = CONNECT_BUF_LEN - conn->outlen;
-    /* TODO: 
-        这里要处理冗余，不然下一次找header找不到.或者直到找到header才去depack */
-    if (to_copy > res) to_copy = res;
+    // === 第一步：在 inbuf 中搜索帧头魔数 ===
+    int frame_hdr_len = sizeof(struct frame_header);
+    int magic_pos = -1;
 
-    if (to_copy > 0) {
-        memcpy(conn->outbuf + conn->outlen, conn->inbuf, to_copy);
-        conn->outlen += to_copy;
-        conn->inlen -= to_copy;
-
-        if (conn->inlen > 0) {
-            memmove(conn->inbuf, conn->inbuf + conn->inlen, conn->inlen);
-            conn->inlen = 0;
+    for (int i = 0; i <= conn->inlen - 2; i++) {
+        if (*(uint16_t*)(conn->inbuf + i) == PROTO_MAGIC) {
+            magic_pos = i;
+            break;
         }
     }
 
-    if (conn->outlen > 0) {/* 有数据可发 */
+    if (magic_pos < 0) {
+        if (conn->inlen > 1) {
+            conn->inbuf[0] = conn->inbuf[conn->inlen - 1];
+            conn->inlen = 1;
+        }
+        printf("[http_cb] magic not found, inlen=%d, discard\n", conn->inlen);
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+    }
+
+    if (magic_pos > 0) {
+        printf("[http_cb] skip %d garbage bytes before magic\n", magic_pos);
+        memmove(conn->inbuf, conn->inbuf + magic_pos, conn->inlen - magic_pos);
+        conn->inlen -= magic_pos;
+    }
+    printf("[http_cb] magic found at pos=%d inlen_after=%d\n", magic_pos, conn->inlen);
+
+    // === 第二步：检查 frame_header 是否完整 ===
+    if (conn->inlen < frame_hdr_len) {
+        printf("[http_cb] incomplete header: inlen=%d need=%d, wait\n", conn->inlen, frame_hdr_len);
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+    }
+
+    // === 第三步：peek jpeg_len ===
+    struct frame_header *hdr = (struct frame_header*)conn->inbuf;
+    uint32_t jpeg_len = hdr->jpeg_len;
+    printf("[http_cb] frame_hdr_len=%d jpeg_len=%u total_need=%d\n",
+           frame_hdr_len, jpeg_len, frame_hdr_len + (int)jpeg_len);
+
+    if (jpeg_len == 0 || jpeg_len > MJPEG_SENDBUF_SIZE) {
+        printf("[http_cb] INVALID jpeg_len=%u (max=%d), skip magic\n", jpeg_len, MJPEG_SENDBUF_SIZE);
+        memmove(conn->inbuf, conn->inbuf + 2, conn->inlen - 2);
+        conn->inlen -= 2;
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+    }
+
+    int total_frame = frame_hdr_len + (int)jpeg_len;
+    if (conn->inlen < total_frame) {
+        printf("[http_cb] incomplete frame: inlen=%d need=%d, wait\n", conn->inlen, total_frame);
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+    }
+
+    // === 第四步：校验帧 ===
+    if (!depack_frame(conn->inbuf, &local_frame)) {
+        printf("[http_cb] depack FAILED, skip 2 bytes and retry\n");
+        memmove(conn->inbuf, conn->inbuf + 2, conn->inlen - 2);
+        conn->inlen -= 2;
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+    }
+    printf("[http_cb] depack OK jpeg_len=%u\n", local_frame.jpeg_len);
+
+    // === 第五步：打包 MJPEG 帧 ===
+    uint8_t* jpeg_data = (uint8_t*)conn->inbuf + frame_hdr_len;
+    /* 检查 JPEG SOI/EOI 标记 */
+    printf("[http_cb] jpeg first2=0x%02X%02X last2=0x%02X%02X\n",
+           jpeg_data[0], jpeg_data[1],
+           jpeg_data[local_frame.jpeg_len - 2], jpeg_data[local_frame.jpeg_len - 1]);
+
+    int packed_len = pack_jpg(sendbuf, jpeg_data, local_frame.jpeg_len);
+    if (packed_len <= 0) {
+        printf("[http_cb] pack_jpg FAILED, skip frame\n");
+        int remain_in = conn->inlen - total_frame;
+        if (remain_in > 0) memmove(conn->inbuf, conn->inbuf + total_frame, remain_in);
+        conn->inlen = remain_in > 0 ? remain_in : 0;
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+    }
+
+    // === 第六步：拷贝到 outbuf ===
+    int avail = CONNECT_BUF_LEN - conn->outlen;
+    int to_copy = (packed_len > avail) ? avail : packed_len;
+    printf("[http_cb] packed_len=%d avail_outbuf=%d to_copy=%d\n", packed_len, avail, to_copy);
+    if (to_copy < packed_len) {
+        printf("[http_cb] WARNING: outbuf full! frame will be truncated (will corrupt JPEG)\n");
+    }
+    memcpy(conn->outbuf + conn->outlen, sendbuf, to_copy);
+    conn->outlen += to_copy;
+
+    // === 第七步：消耗 inbuf 中这一帧数据 ===
+    int remain_in = conn->inlen - total_frame;
+    if (remain_in > 0) {
+        memmove(conn->inbuf, conn->inbuf + total_frame, remain_in);
+    }
+    conn->inlen = remain_in > 0 ? remain_in : 0;
+
+    // === 第八步：发送 outbuf ===
+    printf("[http_cb] sending outlen=%d to fd=%d\n", conn->outlen, conn->fd);
+    if (conn->outlen > 0) {
         int send_cnt = send(conn->fd, conn->outbuf, conn->outlen, 0);
+        printf("[http_cb] send() returned %d (errno=%d)\n", send_cnt, send_cnt < 0 ? errno : 0);
         if (send_cnt < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // 发送缓冲区满，等待 EPOLLOUT 事件
+                printf("[http_cb] EAGAIN set EPOLLOUT\n");
                 set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
                 return 0;
             }
-            // 发送错误
-            perror("send error");
+            perror("[http_cb] send error");
             return -1;
         }
 
         conn->outlen -= send_cnt;
+        printf("[http_cb] after send: outlen remaining=%d\n", conn->outlen);
 
-        if (conn->outlen > 0) {/* 没发完，设置EPOLLOUT事件，下次接着发outbuf剩下的 */
-            /* 发了send_cnt， 还剩outlen， 前移outlen个 */
+        if (conn->outlen > 0) {
             memmove(conn->outbuf, conn->outbuf + send_cnt, conn->outlen);
             set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-        } else {/* 全都发完了，设置EPOLLIN，继续接收数据进行发送 */
+        } else {
             memset(conn->outbuf, 0, CONNECT_BUF_LEN);
             set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
         }
-    } else {/* 无数据可发，设置epollin，等待新数据 */
+    } else {
         set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
     }
-    // int to_copy = conn->inlen;
-    // int res = CONNECT_BUF_LEN - conn->outlen;
-    // if (to_copy > res) to_copy = res;
 
-    // if (to_copy > 0) {
-    //     memcpy(conn->outbuf + conn->outlen, conn->inbuf, to_copy);
-    //     conn->outlen += to_copy;
-    //     conn->inlen -= to_copy;
-
-    //     if (conn->inlen > 0) {
-    //         memmove(conn->inbuf, conn->inbuf + conn->inlen, conn->inlen);
-    //         conn->inlen = 0;
-    //     }
-    // }
-
-    // if (conn->outlen > 0) {/* 有数据可发 */
-    //     int send_cnt = send(conn->fd, conn->outbuf, conn->outlen, 0);
-    //     if (send_cnt < 0) {
-    //         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-    //             // 发送缓冲区满，等待 EPOLLOUT 事件
-    //             set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-    //             return 0;
-    //         }
-    //         // 发送错误
-    //         perror("send error");
-    //         return -1;
-    //     }
-
-    //     conn->outlen -= send_cnt;
-
-    //     if (conn->outlen > 0) {/* 没发完，设置EPOLLOUT事件，下次接着发outbuf剩下的 */
-    //         /* 发了send_cnt， 还剩outlen， 前移outlen个 */
-    //         memmove(conn->outbuf, conn->outbuf + send_cnt, conn->outlen);
-    //         set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-    //     } else {/* 全都发完了，设置EPOLLIN，继续接收数据进行发送 */
-    //         memset(conn->outbuf, 0, CONNECT_BUF_LEN);
-    //         set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-    //     }
-    // } else {/* 无数据可发，设置epollin，等待新数据 */
-    //     set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-    // }
-
+    return 0;
 }
+// int http_callback(struct connect* conn) 
+// {
+//     if (*(uint16_t*)conn->inbuf != PROTO_MAGIC) {
+//         return 0;
+//     }
+//     if (!depack_frame(conn->inbuf, &local_frame)) {
+//         printf("===== depack failed =====\n");
+//         return 0;
+//     }
+    
+//     /* 把inbuf里面的frame抛弃掉，然后取frame.jpeg_len长度的jpg */
+//     int frame_len = sizeof(struct frame_header);
+//     memmove(conn->inbuf, conn->inbuf + frame_len, frame_len);
+//     conn->inlen -= frame_len;
+
+//     int to_copy = pack_jpg(sendbuf, conn->inbuf, local_frame.jpeg_len);
+//     int res = CONNECT_BUF_LEN - conn->outlen;
+//     /* TODO: 
+//         这里要处理冗余，不然下一次找header找不到.或者直到找到header才去depack */
+//     if (to_copy > res) to_copy = res;
+
+//     if (to_copy > 0) {
+//         memcpy(conn->outbuf + conn->outlen, conn->inbuf, to_copy);
+//         conn->outlen += to_copy;
+//         conn->inlen -= to_copy;
+
+//         if (conn->inlen > 0) {
+//             memmove(conn->inbuf, conn->inbuf + conn->inlen, conn->inlen);
+//             conn->inlen = 0;
+//         }
+//     }
+
+//     if (conn->outlen > 0) {/* 有数据可发 */
+//         int send_cnt = send(conn->fd, conn->outbuf, conn->outlen, 0);
+//         if (send_cnt < 0) {
+//             if (errno == EAGAIN || errno == EWOULDBLOCK) {
+//                 // 发送缓冲区满，等待 EPOLLOUT 事件
+//                 set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+//                 return 0;
+//             }
+//             // 发送错误
+//             perror("send error");
+//             return -1;
+//         }
+
+//         conn->outlen -= send_cnt;
+
+//         if (conn->outlen > 0) {/* 没发完，设置EPOLLOUT事件，下次接着发outbuf剩下的 */
+//             /* 发了send_cnt， 还剩outlen， 前移outlen个 */
+//             memmove(conn->outbuf, conn->outbuf + send_cnt, conn->outlen);
+//             set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+//         } else {/* 全都发完了，设置EPOLLIN，继续接收数据进行发送 */
+//             memset(conn->outbuf, 0, CONNECT_BUF_LEN);
+//             set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+//         }
+//     } else {/* 无数据可发，设置epollin，等待新数据 */
+//         set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+//     }
+// }
 
 
 /************ helper *************/
