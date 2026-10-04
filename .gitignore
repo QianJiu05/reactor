@@ -1,1 +1,10 @@
+# 编译产物
 reactor
+fake_cam
+*.o
+
+# 录制输出
+records/
+
+# 调试日志
+*.log

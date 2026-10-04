@@ -8,6 +8,8 @@
 #include "connect_pool.h"
 #include "epoll.h"
 #include "reactor.h"
+#include "recv_resource.h"
+#include "recorder.h"
 int print_callback(struct connect* conn) {
 
     strncpy(conn->outbuf, conn->inbuf, conn->inlen);
@@ -43,12 +45,19 @@ int echo_callback(struct connect* conn) {
 }
 
 void close_callback(struct connect* conn) {
-#ifdef DEBUG    
-    printf("close fd:%d\n",conn->fd);
+#ifdef DEBUG
+    printf("close fd:%d\n", conn->fd);
 #endif
-    set_epoll(conn->sub, 0, EPOLL_CTL_DEL,conn->fd);
+    set_epoll(conn->sub, 0, EPOLL_CTL_DEL, conn->fd);
+
+    if (conn->app.cam.dest >= 0)
+        recorder_close_camera(conn->fd);   /* 相机端断开：收尾落盘上下文 */
+    else
+        viewer_unregister(conn);           /* 查看端断开：从注册表摘掉 */
+
     conn->state = STATE_CLOSED;
-    // conn->node->using--;d
+    if (conn->node != NULL && conn->node->using > 0)
+        conn->node->using--;
     close(conn->fd);
-    // memset(conn, 0, sizeof(struct connect));
+    conn->fd = -1;
 }

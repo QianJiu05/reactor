@@ -13,29 +13,36 @@
 #include "http_helper.h"
 #include "reactor.h"
 #include "epoll.h"
-#include "protocal.h"
+#include "recv_resource.h"
+#include "protocol.h"
+#include "recorder.h"
 
 #define LIBHTTP_REQUEST_MAX_SIZE CONNECT_BUF_LEN
 
-static int http_response_status(struct connect* conn, int status_code);
+static int  http_response_status(struct connect* conn, int status_code);
 static void init_send_stream(struct connect* conn);
+static int  send_outbuf(struct connect* conn);
+static int  handle_camera_frame(struct connect* conn);
+
+/* ===================== HTTP 响应头 ===================== */
 
 int http_get_status_code (const char* request_buf) {
-    int status_code = 200;
-
-    if (request_buf == NULL || request_buf[0] == '\0') {
-        status_code = 400;
-    } 
-
-    return status_code;
+    if (request_buf == NULL || request_buf[0] == '\0')
+        return 400;
+    return 200;
 }
 
-/*  第一次连接的时候，初始化coon->app.http，发送响应头  */
-int generate_http_response(struct connect* conn) 
+/*
+ * 查看端连上来（GET 请求）后：
+ *   1. 回一个 multipart/x-mixed-replace 响应头，浏览器按 MJPEG 流持续渲染；
+ *   2. 把本连接登记为查看端，后续相机推来的帧由转发逻辑写入它的 outbuf。
+ */
+int generate_http_response(struct connect* conn)
 {
     int status_code = http_get_status_code(conn->inbuf);
-    // printf("status code = %d\n",status_code);
-    if (status_code != 200) { return http_response_status(conn, status_code); }
+
+    if (status_code != 200)
+        return http_response_status(conn, status_code);
 
     conn->outlen = snprintf(conn->outbuf, CONNECT_BUF_LEN,
             "HTTP/1.1 200 OK\r\n"
@@ -45,296 +52,231 @@ int generate_http_response(struct connect* conn)
 
     init_send_stream(conn);
 
-    // 循环发送，直到发完或出错
-    int total_sent = 0;
-    int data_len = conn->outlen;
+    if (send_outbuf(conn) < 0)
+        return -1;
 
-    while (total_sent < data_len) {
-        int n = send(conn->fd, conn->outbuf + total_sent, data_len - total_sent, 0);
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // 缓冲区满了，简单忙等待，确保头必须发出去
-                usleep(1000); 
-                continue;
-            }
-            // 真正的发送错误
-            perror("send header error");
-            return -1;
-        }
-        total_sent += n;
-    }
-
-    // 发送完毕，清理状态
-    conn->outlen = 0;
-    memset(conn->outbuf, 0, CONNECT_BUF_LEN);
-    conn->app.http.header_sent = true;
-
-    // 空 inbuf，丢弃 "GET / HTTP/1.1..." 这些请求头数据
+    /* 丢弃 "GET / HTTP/1.1..." 这些请求头数据，之后 inbuf 只放视频帧 */
     memset(conn->inbuf, 0, CONNECT_BUF_LEN);
     conn->inlen = 0;
 
+    viewer_register(conn);
+
+#ifdef DEBUG
+    printf("[http] 查看端接入: fd=%d\n", conn->fd);
+#endif
     return 0;
 }
 
-#define MJPEG_SENDBUF_SIZE (512 * 1024)  // 512KB，与 CONNECT_BUF_LEN 保持一致
-static uint8_t sendbuf[MJPEG_SENDBUF_SIZE];
-struct frame_header local_frame;
+/* ===================== 帧解析 + 转发 ===================== */
 
-static int pack_jpg(uint8_t* sendbuf, uint8_t* rawbuf, int buflen) {
-    int len;
-    len = snprintf((char*)sendbuf, MJPEG_SENDBUF_SIZE,
-                        "--frame\r\n"
-                        "Content-Type: image/jpeg\r\n"
-                        "Content-Length: %d\r\n\r\n",
-                        (int)buflen);
-    printf("[pack_jpg] header_len=%d jpeg_len=%d total_need=%d buf_size=%d\n",
-           len, buflen, len + buflen + 2, MJPEG_SENDBUF_SIZE);
-
-    if (len <= 0) {
-        printf("[pack_jpg] snprintf failed\n");
-        return -1;
-    }
-    if (len + buflen + 2 > MJPEG_SENDBUF_SIZE) {
-        printf("[pack_jpg] ERROR: buffer too small! need=%d have=%d\n",
-               len + buflen + 2, MJPEG_SENDBUF_SIZE);
-        return -1;
-    }
-
-    memcpy(sendbuf + len, rawbuf, buflen);
-    len += buflen;
-    memcpy(sendbuf + len, "\r\n", 2);
-    len += 2;
-
-    printf("[pack_jpg] packed total=%d\n", len);
-    return len;
-}
-
-/** 解析cam端的frame，打包加上mjpg的帧头帧尾
- */
-int http_callback(struct connect* conn) 
+/* 发送 outbuf 里已排好的数据。返回 0 正常；-1 出错 */
+static int send_outbuf(struct connect* conn)
 {
-    // === 入口 debug ===
-    printf("[http_cb] fd=%d inlen=%d outlen=%d header_sent=%d\n",
-           conn->fd, conn->inlen, conn->outlen, conn->app.http.header_sent);
+    while (conn->outlen > 0) {
+        int n = send(conn->fd, conn->outbuf, conn->outlen, 0);
 
-    if (!conn->app.http.header_sent) {
-        printf("[http_cb] WARNING: header not sent yet, skip\n");
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
-    }
-
-    // === 第一步：在 inbuf 中搜索帧头魔数 ===
-    int frame_hdr_len = sizeof(struct frame_header);
-    int magic_pos = -1;
-
-    for (int i = 0; i <= conn->inlen - 2; i++) {
-        if (*(uint16_t*)(conn->inbuf + i) == PROTO_MAGIC) {
-            magic_pos = i;
-            break;
-        }
-    }
-
-    if (magic_pos < 0) {
-        if (conn->inlen > 1) {
-            conn->inbuf[0] = conn->inbuf[conn->inlen - 1];
-            conn->inlen = 1;
-        }
-        printf("[http_cb] magic not found, inlen=%d, discard\n", conn->inlen);
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
-    }
-
-    if (magic_pos > 0) {
-        printf("[http_cb] skip %d garbage bytes before magic\n", magic_pos);
-        memmove(conn->inbuf, conn->inbuf + magic_pos, conn->inlen - magic_pos);
-        conn->inlen -= magic_pos;
-    }
-    printf("[http_cb] magic found at pos=%d inlen_after=%d\n", magic_pos, conn->inlen);
-
-    // === 第二步：检查 frame_header 是否完整 ===
-    if (conn->inlen < frame_hdr_len) {
-        printf("[http_cb] incomplete header: inlen=%d need=%d, wait\n", conn->inlen, frame_hdr_len);
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
-    }
-
-    // === 第三步：peek jpeg_len ===
-    struct frame_header *hdr = (struct frame_header*)conn->inbuf;
-    uint32_t jpeg_len = hdr->jpeg_len;
-    printf("[http_cb] frame_hdr_len=%d jpeg_len=%u total_need=%d\n",
-           frame_hdr_len, jpeg_len, frame_hdr_len + (int)jpeg_len);
-
-    if (jpeg_len == 0 || jpeg_len > MJPEG_SENDBUF_SIZE) {
-        printf("[http_cb] INVALID jpeg_len=%u (max=%d), skip magic\n", jpeg_len, MJPEG_SENDBUF_SIZE);
-        memmove(conn->inbuf, conn->inbuf + 2, conn->inlen - 2);
-        conn->inlen -= 2;
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
-    }
-
-    int total_frame = frame_hdr_len + (int)jpeg_len;
-    if (conn->inlen < total_frame) {
-        printf("[http_cb] incomplete frame: inlen=%d need=%d, wait\n", conn->inlen, total_frame);
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
-    }
-
-    // === 第四步：校验帧 ===
-    if (!depack_frame(conn->inbuf, &local_frame)) {
-        printf("[http_cb] depack FAILED, skip 2 bytes and retry\n");
-        memmove(conn->inbuf, conn->inbuf + 2, conn->inlen - 2);
-        conn->inlen -= 2;
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
-    }
-    printf("[http_cb] depack OK jpeg_len=%u\n", local_frame.jpeg_len);
-
-    // === 第五步：打包 MJPEG 帧 ===
-    uint8_t* jpeg_data = (uint8_t*)conn->inbuf + frame_hdr_len;
-    /* 检查 JPEG SOI/EOI 标记 */
-    printf("[http_cb] jpeg first2=0x%02X%02X last2=0x%02X%02X\n",
-           jpeg_data[0], jpeg_data[1],
-           jpeg_data[local_frame.jpeg_len - 2], jpeg_data[local_frame.jpeg_len - 1]);
-
-    int packed_len = pack_jpg(sendbuf, jpeg_data, local_frame.jpeg_len);
-    if (packed_len <= 0) {
-        printf("[http_cb] pack_jpg FAILED, skip frame\n");
-        int remain_in = conn->inlen - total_frame;
-        if (remain_in > 0) memmove(conn->inbuf, conn->inbuf + total_frame, remain_in);
-        conn->inlen = remain_in > 0 ? remain_in : 0;
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-        return 0;
-    }
-
-    // === 第六步：拷贝到 outbuf ===
-    int avail = CONNECT_BUF_LEN - conn->outlen;
-    int to_copy = (packed_len > avail) ? avail : packed_len;
-    printf("[http_cb] packed_len=%d avail_outbuf=%d to_copy=%d\n", packed_len, avail, to_copy);
-    if (to_copy < packed_len) {
-        printf("[http_cb] WARNING: outbuf full! frame will be truncated (will corrupt JPEG)\n");
-    }
-    memcpy(conn->outbuf + conn->outlen, sendbuf, to_copy);
-    conn->outlen += to_copy;
-
-    // === 第七步：消耗 inbuf 中这一帧数据 ===
-    int remain_in = conn->inlen - total_frame;
-    if (remain_in > 0) {
-        memmove(conn->inbuf, conn->inbuf + total_frame, remain_in);
-    }
-    conn->inlen = remain_in > 0 ? remain_in : 0;
-
-    // === 第八步：发送 outbuf ===
-    printf("[http_cb] sending outlen=%d to fd=%d\n", conn->outlen, conn->fd);
-    if (conn->outlen > 0) {
-        int send_cnt = send(conn->fd, conn->outbuf, conn->outlen, 0);
-        printf("[http_cb] send() returned %d (errno=%d)\n", send_cnt, send_cnt < 0 ? errno : 0);
-        if (send_cnt < 0) {
+        if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                printf("[http_cb] EAGAIN set EPOLLOUT\n");
+                /* 发送缓冲区满：剩下的留给 EPOLLOUT 事件继续发 */
                 set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
                 return 0;
             }
-            perror("[http_cb] send error");
+            if (errno == EINTR)
+                continue;
+            perror("[http] send");
             return -1;
         }
+        if (n == 0)
+            return -1;
 
-        conn->outlen -= send_cnt;
-        printf("[http_cb] after send: outlen remaining=%d\n", conn->outlen);
+        conn->outlen -= n;
+        if (conn->outlen > 0)
+            memmove(conn->outbuf, conn->outbuf + n, conn->outlen);
+    }
 
-        if (conn->outlen > 0) {
-            memmove(conn->outbuf, conn->outbuf + send_cnt, conn->outlen);
-            set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-        } else {
-            memset(conn->outbuf, 0, CONNECT_BUF_LEN);
-            set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+    conn->outlen = 0;
+    set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+    return 0;
+}
+
+/*
+ * 处理来自相机客户端的一帧。
+ *
+ * inbuf 里可能同时存在半帧、一帧或多帧（粘包），
+ * 这里按「找魔数 → 判头部 → 判长度 → 校验 → 取走一帧」的循环反复消费，
+ * 剩余不足一帧的字节留在缓冲里等下次 recv 补齐（拆包）。
+ */
+static int handle_camera_frame(struct connect* conn)
+{
+    const int    hdr_len = (int)sizeof(struct frame_header);
+    struct frame_header hdr;
+    int consumed = 0;
+
+    while (conn->inlen - consumed >= hdr_len) {
+        uint8_t *base = (uint8_t*)conn->inbuf + consumed;
+        int      avail = conn->inlen - consumed;
+
+        /* 1. 定位魔数，丢掉之前的垃圾字节 */
+        int magic_pos = -1;
+        for (int i = 0; i + 1 < avail; i++) {
+            if (*(uint16_t*)(base + i) == PROTO_MAGIC) {
+                magic_pos = i;
+                break;
+            }
         }
-    } else {
-        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        if (magic_pos < 0) {
+            /* 整段都没有魔数：保留最后 1 字节（魔数可能跨包） */
+            consumed = conn->inlen - 1;
+            break;
+        }
+        if (magic_pos > 0) {
+#ifdef DEBUG
+            printf("[http] fd=%d 丢弃 %d 字节无效数据\n", conn->fd, magic_pos);
+#endif
+            consumed += magic_pos;
+            continue;
+        }
+
+        /* 2. 帧头是否完整 */
+        if (avail < hdr_len)
+            break;
+
+        memcpy(&hdr, base, sizeof(hdr));
+
+        /* 3. jpeg_len 合法性：不合法说明是伪魔数，跳过 2 字节继续找 */
+        if (hdr.version != PROTO_VERSION ||
+            hdr.jpeg_len == 0 || hdr.jpeg_len > PROTO_MAX_PAYLOAD ||
+            hdr.jpeg_len > (uint32_t)CONNECT_BUF_LEN) {
+#ifdef DEBUG
+            printf("[http] fd=%d 非法帧头 (ver=%u len=%u)，跳过\n",
+                   conn->fd, hdr.version, hdr.jpeg_len);
+#endif
+            consumed += 2;
+            continue;
+        }
+
+        int total_frame = hdr_len + (int)hdr.jpeg_len;
+
+        /* 4. 载荷是否收全（拆包：没收全就等下一次 recv） */
+        if (avail < total_frame)
+            break;
+
+        /* 5. 校验和 */
+        if (!proto_check(base, (size_t)avail, &hdr)) {
+#ifdef DEBUG
+            printf("[http] fd=%d 校验失败，跳过 2 字节重找\n", conn->fd);
+#endif
+            consumed += 2;
+            continue;
+        }
+
+        /* 6. 丢帧统计：seq 不连续说明网络或客户端队列丢了帧 */
+        if (conn->app.cam.seq_inited && hdr.seq != conn->app.cam.last_seq + 1) {
+            printf("[http] fd=%d 帧序号跳变: 期望 %u, 收到 %u (丢 %u 帧)\n",
+                   conn->fd, conn->app.cam.last_seq + 1, hdr.seq,
+                   hdr.seq - conn->app.cam.last_seq - 1);
+        }
+        conn->app.cam.last_seq  = hdr.seq;
+        conn->app.cam.seq_inited = 1;
+
+        uint8_t *jpeg = base + hdr_len;
+
+        /* 7a. 落盘存储（课题要求 4）—— 旁路，失败不影响转发 */
+        recorder_write_frame(conn->fd, &hdr, jpeg, hdr.jpeg_len);
+
+        /* 7b. 转发给所有查看端（课题要求 5 的后半段） */
+        viewer_broadcast(&hdr, jpeg);
+
+        consumed += total_frame;
+    }
+
+    /* 把已消费的字节移出缓冲 */
+    if (consumed > 0) {
+        int remain = conn->inlen - consumed;
+        if (remain > 0)
+            memmove(conn->inbuf, conn->inbuf + consumed, remain);
+        conn->inlen = remain > 0 ? remain : 0;
     }
 
     return 0;
 }
-// int http_callback(struct connect* conn) 
-// {
-//     if (*(uint16_t*)conn->inbuf != PROTO_MAGIC) {
-//         return 0;
-//     }
-//     if (!depack_frame(conn->inbuf, &local_frame)) {
-//         printf("===== depack failed =====\n");
-//         return 0;
-//     }
-    
-//     /* 把inbuf里面的frame抛弃掉，然后取frame.jpeg_len长度的jpg */
-//     int frame_len = sizeof(struct frame_header);
-//     memmove(conn->inbuf, conn->inbuf + frame_len, frame_len);
-//     conn->inlen -= frame_len;
 
-//     int to_copy = pack_jpg(sendbuf, conn->inbuf, local_frame.jpeg_len);
-//     int res = CONNECT_BUF_LEN - conn->outlen;
-//     /* TODO: 
-//         这里要处理冗余，不然下一次找header找不到.或者直到找到header才去depack */
-//     if (to_copy > res) to_copy = res;
+/* 把 inbuf 里排好的帧数据搬到 outbuf（转发的最后一步） */
+static int flush_to_viewer(struct connect* conn)
+{
+    int space = CONNECT_BUF_LEN - conn->outlen;
 
-//     if (to_copy > 0) {
-//         memcpy(conn->outbuf + conn->outlen, conn->inbuf, to_copy);
-//         conn->outlen += to_copy;
-//         conn->inlen -= to_copy;
+    if (space <= 0) {
+        /* 查看端消费不过来：直接丢弃，不能阻塞相机链路 */
+#ifdef DEBUG
+        printf("[http] 查看端 fd=%d 来不及接收，丢弃 %d 字节\n",
+               conn->fd, conn->inlen);
+#endif
+        conn->inlen = 0;
+        return 0;
+    }
 
-//         if (conn->inlen > 0) {
-//             memmove(conn->inbuf, conn->inbuf + conn->inlen, conn->inlen);
-//             conn->inlen = 0;
-//         }
-//     }
+    int to_copy = (conn->inlen < space) ? conn->inlen : space;
+    memcpy(conn->outbuf + conn->outlen, conn->inbuf, to_copy);
+    conn->outlen += to_copy;
 
-//     if (conn->outlen > 0) {/* 有数据可发 */
-//         int send_cnt = send(conn->fd, conn->outbuf, conn->outlen, 0);
-//         if (send_cnt < 0) {
-//             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-//                 // 发送缓冲区满，等待 EPOLLOUT 事件
-//                 set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-//                 return 0;
-//             }
-//             // 发送错误
-//             perror("send error");
-//             return -1;
-//         }
+    if (to_copy < conn->inlen) {
+        int remain = conn->inlen - to_copy;
+        memmove(conn->inbuf, conn->inbuf + to_copy, remain);
+        conn->inlen = remain;
+    } else {
+        conn->inlen = 0;
+    }
 
-//         conn->outlen -= send_cnt;
+    return send_outbuf(conn);
+}
 
-//         if (conn->outlen > 0) {/* 没发完，设置EPOLLOUT事件，下次接着发outbuf剩下的 */
-//             /* 发了send_cnt， 还剩outlen， 前移outlen个 */
-//             memmove(conn->outbuf, conn->outbuf + send_cnt, conn->outlen);
-//             set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
-//         } else {/* 全都发完了，设置EPOLLIN，继续接收数据进行发送 */
-//             memset(conn->outbuf, 0, CONNECT_BUF_LEN);
-//             set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-//         }
-//     } else {/* 无数据可发，设置epollin，等待新数据 */
-//         set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
-//     }
-// }
+/* ===================== 连接主回调 ===================== */
 
+/*
+ * 同一份发送回调服务两类连接：
+ *   · 相机客户端：inbuf 里是自定义协议帧 → 解析、落盘、广播
+ *   · 查看端：把转发进来的帧包成 MJPEG 分段写出去
+ */
+int http_callback(struct connect* conn)
+{
+    if (!conn->app.http.header_sent) {
+        /* 响应头还没发出去，先补发 */
+        return send_outbuf(conn);
+    }
 
-/************ helper *************/
+    if (conn->app.cam.dest < 0) {
+        /* 查看端：outbuf 里是待发送的 MJPEG 分段 */
+        if (conn->outlen > 0)
+            return send_outbuf(conn);
+        set_epoll(conn->sub, EPOLLIN, EPOLL_CTL_MOD, conn->fd);
+        return 0;
+    }
+
+    return handle_camera_frame(conn);
+}
+
+/* ===================== helper ===================== */
+
 static void init_send_stream(struct connect* conn) {
     conn->app.http.file_fd = -1;  // 标记为不从文件读取
     conn->app.http.remain = -1;   // 表示大小未知
-    conn->app.http.header_sent = false;
+    conn->app.http.header_sent = true;
     conn->app.http.stream_mode = true;
 }
 
 /* "HTTP/1.1 200 OK\r\n" */
 static int http_response_status(struct connect* conn, int status_code) {
-    const char* status_response;
-    const char* body;
+    const char* status_response = status_200;
+    const char* body = body_200;
     const char* connection;
     const char* type;
-    
+
     switch (status_code)
     {
         case 200:
             status_response = status_200;
-            body = body_200; 
+            body = body_200;
             break;
         case 400:
             status_response = status_400;
@@ -344,9 +286,8 @@ static int http_response_status(struct connect* conn, int status_code) {
             status_response = status_404;
             body = body_404;
             break;
-    
         default:
-            printf("status code not impled:%d\n",status_code);
+            printf("status code not impled:%d\n", status_code);
             break;
     }
 
@@ -355,7 +296,7 @@ static int http_response_status(struct connect* conn, int status_code) {
     } else {
         connection = connect_close;
     }
-    
+
     switch (conn->app.http.content_type)
     {
         case TYPE_NO_NEED:
@@ -365,11 +306,11 @@ static int http_response_status(struct connect* conn, int status_code) {
             type = type_text_html;
             break;
         case TYPE_IMG_JPEG:
-            // type = type_image_jpg;
             type = type_multipart;
             break;
         default:
-            printf("type not impled:%d\n",conn->app.http.content_type);
+            type = type_no_need;
+            printf("type not impled:%d\n", conn->app.http.content_type);
             break;
     }
 
@@ -381,5 +322,6 @@ static int http_response_status(struct connect* conn, int status_code) {
                     "%s\r\n\r\n"            /* connection */
                     "%s",                   /* body */
                     status_code, status_response, type, body_len, connection, body);
+    conn->app.http.header_sent = true;
     return ret;
 }
