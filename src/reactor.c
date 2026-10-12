@@ -19,6 +19,7 @@
 #include "callback.h"
 #include "http_handler.h"
 #include "recv_resource.h"
+#include "stream_source.h"
 #include "server_init.h"
 #include "epoll.h"
 
@@ -66,7 +67,17 @@ void* func_reactor (void* arg) {
 
         /* events[i].data.fd为已有的fd */
         for (int i = 0; i < nready; i++) {
-            struct connect* this = get_connector(events[i].data.fd);
+            struct connect* this;
+
+            /*
+             * 这个 fd 可能是某个查看端的「等待占位图」定时器，
+             * 而不是连接 socket —— 先交给 stream_source 判定。
+             * 它返回 1 表示已消化该事件。
+             */
+            if (stream_source_handle_timer(events[i].data.fd))
+                continue;
+
+            this = get_connector(events[i].data.fd);
             if (this == NULL || this->state == STATE_CLOSED)
                 continue;
 

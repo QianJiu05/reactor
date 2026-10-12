@@ -15,6 +15,7 @@
 #include "reactor.h"
 #include "epoll.h"
 #include "recv_resource.h"
+#include "stream_source.h"
 #include "protocol.h"
 #include "account.h"
 #include "recorder.h"
@@ -163,10 +164,16 @@ int generate_http_response(struct connect* conn)
 
     viewer_register(conn);
 
+    /*
+     * 采集端还没上线的话，先推「等待设备」占位图。
+     * 这里按需启动定时器；采集端上线时由 handle_resource() 负责解除。
+     */
+    stream_source_arm_idle_timer(conn, !account_cam_online(idx));
+
 #ifdef DEBUG
     printf("[http] 查看端接入: fd=%d 账号 \"%s\"%s\n",
            conn->fd, account,
-           account_cam_online(idx) ? "" : "（采集端尚未上线）");
+           account_cam_online(idx) ? "" : "（采集端尚未上线，先推占位图）");
 #endif
     return 0;
 }

@@ -10,6 +10,7 @@
 #include "reactor.h"
 #include "recv.h"
 #include "recv_resource.h"
+#include "stream_source.h"
 #include "recorder.h"
 int print_callback(struct connect* conn) {
 
@@ -53,10 +54,12 @@ void close_callback(struct connect* conn) {
 
     /* 用 phase 判定角色，不再依赖 app.cam.dest：
      * app 是 union，在查看端连接上读 cam.dest 是未定义行为。 */
-    if (conn->phase == PHASE_CAM)
+    if (conn->phase == PHASE_CAM) {
         recorder_close_camera(conn->fd);   /* 采集端断开：收尾落盘上下文 */
-    else if (conn->phase == PHASE_VIEWER)
-        viewer_unregister(conn);           /* 查看端断开：从注册表摘掉 */
+    } else if (conn->phase == PHASE_VIEWER) {
+        stream_source_drop_idle_timer(conn);   /* 先释放占位图定时器 */
+        viewer_unregister(conn);               /* 再从注册表摘掉 */
+    }
 
     conn->state = STATE_CLOSED;
     conn->phase = PHASE_CLOSED;

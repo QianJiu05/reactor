@@ -50,6 +50,12 @@ struct connect{
     /* 归属账号在账号表中的下标，-1 表示尚未归属任何账号 */
     int account_idx;
 
+    /*
+     * 查看端等待采集端上线时用的占位图定时器，-1 表示未创建。
+     * 只有"正在等待"的查看端才有活跃定时器，采集端上线后即解除。
+     */
+    int idle_tfd;
+
     struct reactor* sub;
     struct connect_node* node;
 

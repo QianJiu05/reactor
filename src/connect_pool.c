@@ -27,6 +27,7 @@ void connect_init(struct connect* conn, int fd) {
     conn->serve_type = SERVE_NOT_INIT;
     conn->phase = PHASE_PRE_AUTH;   /* 等完整首行 */
     conn->account_idx = -1;         /* 尚未归属任何账号 */
+    conn->idle_tfd = -1;            /* 占位图定时器按需创建 */
     conn->app.cam.dest = -1;
     conn->app.cam.last_seq = 0;
     conn->app.cam.seq_inited = 0;

@@ -33,10 +33,12 @@
 #include "reactor.h"
 #include "http_handler.h"
 #include "recv_resource.h"
+#include "stream_source.h"
 #include "server_init.h"
 #include "epoll.h"
 #include "accept.h"
 #include "recorder.h"
+#include "account.h"
 
 int g_server_port = SERVER_PORT;
 
@@ -65,12 +67,22 @@ int main (int argc, char **argv) {
 
     printf("=========== 视频转播服务器 ===========\n");
     printf("监听端口 : %d\n", port);
-    printf("查看地址 : http://<本机IP>:%d/\n", port);
+    printf("查看地址 : http://<本机IP>:%d/<账号>   例如 /alice\n", port);
     printf("落盘目录 : %s\n", record_dir);
+    printf("账号文件 : %s\n", ACCOUNT_FILE);
     printf("=====================================\n");
 
-    /* 落盘初始化失败不致命：转发链路照常工作 */
+    /*
+     * 三个初始化都【不致命】：任一失败只降级对应功能，
+     * 服务器照样监听端口，便于先起服务再补配置文件。
+     */
+    if (account_init(ACCOUNT_FILE) < 0)
+        fprintf(stderr, "提示: 账号表未加载，采集端会收到 ERR AUTH，"
+                        "查看端会收到 404\n");
+
     recorder_init(record_dir);
+
+    stream_source_init(WAITING_IMG);
 
     connect_pool_init();
 

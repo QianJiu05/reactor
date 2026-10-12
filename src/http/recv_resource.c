@@ -30,6 +30,7 @@
 #include "reactor.h"
 #include "connect_pool.h"
 #include "epoll.h"
+#include "stream_source.h"
 #include "protocol.h"
 #include "account.h"
 #include "config.h"
@@ -260,6 +261,12 @@ int handle_resource(struct connect* conn)
      * send() 里发出，清空会把那一帧丢掉（设计文档 D7）。 */
 
     send_handshake_reply(conn, "OK\r\n");
+
+    /*
+     * 采集端上线了：该账号下正在等设备的查看端可以停止推占位图了。
+     * 不必给它发任何"开始"信号 —— 下一帧真实数据自然会把占位图顶掉。
+     */
+    stream_source_stop_idle_for_account(idx);
 
     printf("[cam] 采集端接入: fd=%d 账号 \"%s\"\n", conn->fd, name);
     return 0;
