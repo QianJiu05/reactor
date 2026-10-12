@@ -149,4 +149,31 @@ static inline int http_path_to_account(const char *path, char *out, int out_cap)
     return (account_name_valid(out) == 0) ? 1 : 0;
 }
 
+/*
+ * 判定服务器回应是否为「错误行」。
+ *
+ * 采集端用它决定要不要继续推流，因此判定必须【宽松】：除显式识别出的
+ * OK 之外，任何以 "ERR" 开头的回应都当作失败，未知回应也一律当作失败。
+ * 宁可让采集端退出并打印原因，也不要让它对着一个已经关闭的连接空转。
+ *
+ * 返回：PROTO_REPLY_KIND_OK / _ERR / _UNKNOWN
+ */
+#define PROTO_REPLY_KIND_OK       0
+#define PROTO_REPLY_KIND_ERR      1
+#define PROTO_REPLY_KIND_UNKNOWN  2
+
+static inline int http_classify_cam_reply(const char *line)
+{
+    if (line == NULL)
+        return PROTO_REPLY_KIND_UNKNOWN;
+
+    if (strcmp(line, "OK") == 0)
+        return PROTO_REPLY_KIND_OK;
+
+    if (strncmp(line, "ERR", 3) == 0)
+        return PROTO_REPLY_KIND_ERR;
+
+    return PROTO_REPLY_KIND_UNKNOWN;
+}
+
 #endif /* __HTTP_PARSE_H__ */

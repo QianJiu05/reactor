@@ -33,6 +33,7 @@
 #include "stream_source.h"
 #include "protocol.h"
 #include "account.h"
+#include "utils.h"
 #include "config.h"
 
 /* ===================== 查看端注册 ===================== */
@@ -182,6 +183,10 @@ void viewer_broadcast(int account_idx, const struct frame_header* hdr,
  * 回应只有几个字节，而连接刚建立、发送缓冲区一定是空的，
  * 同步发出去最简单，也让采集端能立刻拿到结果。发不出去（EAGAIN）
  * 就交给 epoll 后续处理，不影响正确性。
+ *
+ * ★ 调用时机很重要：本函数【绝不能在持 g_account_lock 时调用】。
+ *   send() 在极端情况下可能阻塞（对端窗口为 0 或本端缓冲满），
+ *   那会把账号表锁一起卡住，拖死其它 reactor 线程。
  */
 static void send_handshake_reply(struct connect* conn, const char *line)
 {
@@ -203,6 +208,27 @@ static void send_handshake_reply(struct connect* conn, const char *line)
     fprintf(stderr, "fd:%d 发送握手回应失败: %s\n", conn->fd, strerror(errno));
 }
 
+/*
+ * 关闭被顶替的僵死采集端连接。
+ *
+ * ★ 同样【不能在持 g_account_lock 时调用】：close_callback() 会调
+ *   recorder_close_camera()，将来若再加账号相关的清理动作，
+ *   在锁内调用就会死锁。
+ */
+static void close_stale_camera(int stale_fd)
+{
+    struct connect *old;
+
+    if (stale_fd < 0)
+        return;
+
+    old = get_connector(stale_fd);
+    if (old != NULL && old->state == STATE_USING && old->fd == stale_fd) {
+        printf("[cam] 关闭被顶替的僵死采集端 fd=%d\n", stale_fd);
+        old->close(old);
+    }
+}
+
 int handle_resource(struct connect* conn)
 {
     char name[ACCOUNT_NAME_LEN];
@@ -213,43 +239,44 @@ int handle_resource(struct connect* conn)
     /* 格式: "CAM <account>\r\n"；解析逻辑见 inc/http/http_parse.h */
     if (!http_parse_cam_account(conn->inbuf, name, sizeof(name))) {
         printf("[cam] fd=%d 握手报文缺少账号名或前缀不匹配\n", conn->fd);
-        send_handshake_reply(conn, "ERR AUTH\r\n");
+        send_handshake_reply(conn, PROTO_REPLY_ERR_AUTH);
         return -1;
     }
 
     if (account_name_valid(name) != 0) {
         printf("[cam] fd=%d 账号名非法: \"%s\"\n", conn->fd, name);
-        send_handshake_reply(conn, "ERR AUTH\r\n");
+        send_handshake_reply(conn, PROTO_REPLY_ERR_AUTH);
         return -1;
     }
 
     idx = account_lookup(name);
     if (idx < 0) {
         printf("[cam] fd=%d 账号不存在: \"%s\"\n", conn->fd, name);
-        send_handshake_reply(conn, "ERR AUTH\r\n");
+        send_handshake_reply(conn, PROTO_REPLY_ERR_AUTH);
         return -1;
     }
 
+    /* 绑定只在锁内做，不含任何网络 I/O 或连接关闭动作 */
     rc = account_cam_bind(idx, conn->fd, &stale_fd);
+
     if (rc == ACCOUNT_BIND_BUSY) {
-        printf("[cam] fd=%d 账号 \"%s\" 已被占用\n", conn->fd, name);
-        send_handshake_reply(conn, "ERR BUSY\r\n");
+        int64_t idle = (int64_t)now_ms() - account_cam_last_frame_ms(idx);
+        printf("[cam] fd=%d 账号 \"%s\" 已被占用（上一帧 %lld ms 前，"
+               "未超过僵死阈值 %d ms），回 ERR BUSY\n",
+               conn->fd, name, (long long)idle, CAM_STALE_MS);
+        send_handshake_reply(conn, PROTO_REPLY_ERR_BUSY);
         return -1;
     }
     if (rc != ACCOUNT_BIND_OK) {
         printf("[cam] fd=%d 绑定账号 \"%s\" 失败\n", conn->fd, name);
-        send_handshake_reply(conn, "ERR AUTH\r\n");
+        send_handshake_reply(conn, PROTO_REPLY_ERR_AUTH);
         return -1;
     }
 
-    /* 顶替僵死连接：这里只负责关闭旧连接，账号已经指向新 fd */
-    if (stale_fd >= 0) {
-        struct connect *old = get_connector(stale_fd);
-        if (old != NULL && old->state == STATE_USING && old->fd == stale_fd) {
-            printf("[cam] 关闭僵死的旧采集端 fd=%d\n", stale_fd);
-            old->close(old);
-        }
-    }
+    /* 顶替发生时先关旧连接，再给新连接回 OK ——
+     * 两个动作都在锁外，且顺序上先清理旧的后接受新的，
+     * 避免旧连接的 close_callback 反过来影响刚建立的绑定。 */
+    close_stale_camera(stale_fd);
 
     conn->account_idx        = idx;
     conn->app.cam.dest       = conn->fd;
@@ -260,7 +287,7 @@ int handle_resource(struct connect* conn)
      * 这里【不要】再清空 inbuf —— 对端可能把握手行和第一帧放在同一个
      * send() 里发出，清空会把那一帧丢掉（设计文档 D7）。 */
 
-    send_handshake_reply(conn, "OK\r\n");
+    send_handshake_reply(conn, PROTO_REPLY_OK);
 
     /*
      * 采集端上线了：该账号下正在等设备的查看端可以停止推占位图了。
@@ -268,6 +295,10 @@ int handle_resource(struct connect* conn)
      */
     stream_source_stop_idle_for_account(idx);
 
-    printf("[cam] 采集端接入: fd=%d 账号 \"%s\"\n", conn->fd, name);
+    if (stale_fd >= 0)
+        printf("[cam] 采集端接入: fd=%d 账号 \"%s\"（顶替了 fd=%d）\n",
+               conn->fd, name, stale_fd);
+    else
+        printf("[cam] 采集端接入: fd=%d 账号 \"%s\"\n", conn->fd, name);
     return 0;
 }

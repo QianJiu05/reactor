@@ -29,9 +29,17 @@
 #define PROTO_MAGIC    0xAA55   /* 帧头魔数，用于在字节流中定位帧起点 */
 #define PROTO_VERSION  0x01     /* 协议版本，收发双方必须一致 */
 
-/* 服务端控制命令：相机客户端连接后发送的第一行 */
-#define PROTO_CMD_CAM   "CAM"           /* "CAM\r\n"      注册为相机客户端 */
-#define PROTO_CMD_SUB   "SUBSCRIBE"     /* "SUBSCRIBE\r\n" 注册为查看端 */
+/* 服务端控制命令：采集端连接后发送的第一行 */
+#define PROTO_CMD_CAM   "CAM"           /* "CAM <account>\r\n" 注册为采集端 */
+
+/* ===== 服务端对采集端握手的回应 =====
+ * 采集端必须按行读取这些回应，读到 OK 才进入推流循环。
+ * 定义放在协议头里，保证服务器与采集端用的是同一份字面量。 */
+#define PROTO_REPLY_OK        "OK\r\n"          /* 接受，开始收帧 */
+#define PROTO_REPLY_ERR_AUTH  "ERR AUTH\r\n"    /* 账号不存在 / 名字非法 */
+#define PROTO_REPLY_ERR_BUSY  "ERR BUSY\r\n"    /* 该账号已有采集端在线 */
+
+#define PROTO_REPLY_LEN_MAX   32                /* 回应最大长度（含 CRLF） */
 
 /* 最大载荷长度：按此值判断 jpeg_len 是否被伪魔数污染 */
 #define PROTO_MAX_PAYLOAD  (1024 * 1024)

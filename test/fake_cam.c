@@ -35,6 +35,7 @@
 #include <arpa/inet.h>
 
 #include "protocol.h"
+#include "http_parse.h"
 
 #define DEFAULT_ACCOUNT "alice"
 #define DEFAULT_IMG     "../test/featured.jpg"
@@ -176,7 +177,7 @@ int main(int argc, char *argv[])
 
     /* ---- 等服务器回应 ---- */
     {
-        char reply[64];
+        char reply[PROTO_REPLY_LEN_MAX];
 
         if (read_reply_line(sock, reply, sizeof(reply)) != 0) {
             fprintf(stderr, "等待服务器握手回应超时或连接断开\n");
@@ -186,16 +187,27 @@ int main(int argc, char *argv[])
 
         printf("服务器回应: %s\n", reply);
 
-        if (strcmp(reply, "OK") != 0) {
-            if (strcmp(reply, "ERR AUTH") == 0)
-                fprintf(stderr, "账号 \"%s\" 不存在或名字非法，"
-                                "请检查 accounts.conf\n", account);
-            else if (strcmp(reply, "ERR BUSY") == 0)
-                fprintf(stderr, "账号 \"%s\" 已有采集端在线\n", account);
-            else
-                fprintf(stderr, "未识别的回应\n");
-            close(sock);
-            return 1;
+        /* 判定逻辑与嵌入式端共用同一份实现（宽松判定：非 OK 即失败） */
+        switch (http_classify_cam_reply(reply)) {
+            case PROTO_REPLY_KIND_OK:
+                break;
+
+            case PROTO_REPLY_KIND_ERR:
+                if (strcmp(reply, "ERR AUTH") == 0)
+                    fprintf(stderr, "账号 \"%s\" 不存在或名字非法，"
+                                    "请检查 accounts.conf\n", account);
+                else if (strcmp(reply, "ERR BUSY") == 0)
+                    fprintf(stderr, "账号 \"%s\" 已有采集端在线且未超时\n",
+                            account);
+                else
+                    fprintf(stderr, "服务器拒绝: %s\n", reply);
+                close(sock);
+                return 1;
+
+            default:
+                fprintf(stderr, "未识别的服务器回应: %s\n", reply);
+                close(sock);
+                return 1;
         }
     }
 

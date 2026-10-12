@@ -442,3 +442,20 @@ void account_cleanup(void)
 {
     pthread_mutex_destroy(&g_account_lock);
 }
+
+#ifdef ACCOUNT_TEST_PROBE
+/*
+ * 测试专用：直接改写某账号的 last_frame_ms。
+ *
+ * 僵死顶替的判定完全依赖「距上一帧多久」，而这个时间只能靠真实等待来推进，
+ * 测试里等 10 秒不现实。本函数让测试把时间点精确摆到 CAM_STALE_MS 两侧，
+ * 从而验证边界行为。仅在定义 ACCOUNT_TEST_PROBE 时编入，不影响正式构建。
+ */
+void g_accounts_probe_set_last_frame(int idx, int64_t ms)
+{
+    pthread_mutex_lock(&g_account_lock);
+    if (idx_valid(idx))
+        g_accounts[idx].last_frame_ms = ms;
+    pthread_mutex_unlock(&g_account_lock);
+}
+#endif
