@@ -55,9 +55,8 @@ int generate_http_response(struct connect* conn)
     if (send_outbuf(conn) < 0)
         return -1;
 
-    /* 丢弃 "GET / HTTP/1.1..." 这些请求头数据，之后 inbuf 只放视频帧 */
-    memset(conn->inbuf, 0, CONNECT_BUF_LEN);
-    conn->inlen = 0;
+    /* 注意：首行与请求头由 recv.c 统一消费（只移出首行、保留后续字节），
+     * 这里【不要】再 memset 整个 inbuf —— 那会丢掉紧跟请求头的数据。 */
 
     viewer_register(conn);
 

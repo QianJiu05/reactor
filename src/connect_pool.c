@@ -25,7 +25,11 @@ void connect_init(struct connect* conn, int fd) {
     conn->recv_func.recv_cb = recv_callback;
     conn->close = close_callback;
     conn->serve_type = SERVE_NOT_INIT;
-    conn->app.cam.dest = -1;        /* 默认是查看端；相机握手时置为 fd */
+    conn->phase = PHASE_PRE_AUTH;   /* 等完整首行 */
+    conn->account_idx = -1;         /* 尚未归属任何账号 */
+    conn->app.cam.dest = -1;
+    conn->app.cam.last_seq = 0;
+    conn->app.cam.seq_inited = 0;
 
     conn->state = STATE_USING;
     if (node != NULL)

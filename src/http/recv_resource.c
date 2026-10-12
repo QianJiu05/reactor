@@ -163,13 +163,13 @@ int handle_resource(struct connect* conn)
         return -1;
     }
 
-    conn->app.cam.dest       = conn->fd;   /* >=0 即标记为相机连接 */
+    conn->app.cam.dest       = conn->fd;
     conn->app.cam.last_seq   = 0;
     conn->app.cam.seq_inited = 0;
 
-    /* 清空握手报文，避免它被当成帧数据参与魔数搜索 */
-    memset(conn->inbuf, 0, conn->inlen);
-    conn->inlen = 0;
+    /* 注意：首行由 recv.c 统一消费（只移出首行、保留后续字节），
+     * 这里【不要】再清空 inbuf —— 对端可能把握手行和第一帧放在同一个
+     * send() 里发出，清空会把那一帧丢掉（设计文档 D7）。 */
 
     printf("[cam] 相机客户端接入: fd=%d\n", conn->fd);
     return 0;

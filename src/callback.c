@@ -8,6 +8,7 @@
 #include "connect_pool.h"
 #include "epoll.h"
 #include "reactor.h"
+#include "recv.h"
 #include "recv_resource.h"
 #include "recorder.h"
 int print_callback(struct connect* conn) {
@@ -50,12 +51,15 @@ void close_callback(struct connect* conn) {
 #endif
     set_epoll(conn->sub, 0, EPOLL_CTL_DEL, conn->fd);
 
-    if (conn->app.cam.dest >= 0)
-        recorder_close_camera(conn->fd);   /* 相机端断开：收尾落盘上下文 */
-    else
+    /* 用 phase 判定角色，不再依赖 app.cam.dest：
+     * app 是 union，在查看端连接上读 cam.dest 是未定义行为。 */
+    if (conn->phase == PHASE_CAM)
+        recorder_close_camera(conn->fd);   /* 采集端断开：收尾落盘上下文 */
+    else if (conn->phase == PHASE_VIEWER)
         viewer_unregister(conn);           /* 查看端断开：从注册表摘掉 */
 
     conn->state = STATE_CLOSED;
+    conn->phase = PHASE_CLOSED;
     if (conn->node != NULL && conn->node->using > 0)
         conn->node->using--;
     close(conn->fd);

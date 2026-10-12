@@ -14,10 +14,10 @@
 #define STATE_USING 1
 
 
-/* 相机客户端: 连接后发送 "CAM\r\n" 注册，服务器自动把帧转发给所有查看端。
- * dest >= 0 表示这是相机连接（复用该字段做角色标记），-1 表示查看端。 */
+/* 相机客户端: 连接后发送 "CAM <account>\r\n" 注册，
+ * 服务器只把帧转发给同一账号下的查看端。 */
 struct cam_terminal {
-    int      dest;          /* 角色标记，见上 */
+    int      dest;          /* 已废弃的角色标记，仅为兼容保留；请用 conn->phase */
     uint32_t last_seq;      /* 上一帧序号，用于统计丢帧 */
     int      seq_inited;
 };
@@ -26,6 +26,13 @@ struct connect{
     int fd;
     int state;
     int serve_type;
+
+    /* 连接所处阶段，取值见 recv.h 的 enum conn_phase */
+    int phase;
+
+    /* 归属账号在账号表中的下标，-1 表示尚未归属任何账号 */
+    int account_idx;
+
     struct reactor* sub;
     struct connect_node* node;
 
