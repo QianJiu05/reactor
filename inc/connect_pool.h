@@ -13,6 +13,23 @@
 #define STATE_CLOSED 0
 #define STATE_USING 1
 
+/*
+ * 连接所处阶段。
+ *
+ * 原来只用 serve_type 一个字段同时表达「角色」和「阶段」，加账号体系后不够用：
+ * 必须先明确区分「还没收到完整首行」和「已经解析出角色」，
+ * 否则首行被 TCP 分片时就会误判（设计文档 D6）。
+ *
+ * 定义放在这里而不是 recv.h：所有拿到 struct connect 的模块
+ * （http_handler / callback / recv_resource）都要用它判断角色。
+ */
+enum conn_phase {
+    PHASE_PRE_AUTH = 0,     /* 已 accept，等待完整首行（\r\n） */
+    PHASE_CAM,              /* 采集端已注册，收到的是自定义协议帧 */
+    PHASE_VIEWER,           /* 查看端已登记，可能已开始推流 */
+    PHASE_CLOSED
+};
+
 
 /* 相机客户端: 连接后发送 "CAM <account>\r\n" 注册，
  * 服务器只把帧转发给同一账号下的查看端。 */
