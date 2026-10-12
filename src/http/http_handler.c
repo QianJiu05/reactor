@@ -285,11 +285,16 @@ static int handle_camera_frame(struct connect* conn)
 
         uint8_t *jpeg = base + hdr_len;
 
-        /* 7a. 落盘存储（课题要求 4）—— 旁路，失败不影响转发 */
+        /* 7a. 更新该账号的帧活动时间与计数（僵死判定依赖它） */
+        account_touch_frame(conn->account_idx);
+
+        /* 7b. 落盘存储（课题要求 4）—— 旁路，失败不影响转发 */
         recorder_write_frame(conn->fd, &hdr, jpeg, hdr.jpeg_len);
 
-        /* 7b. 转发给该账号下的查看端（课题要求 5 的后半段） */
-        viewer_broadcast(&hdr, jpeg);
+        /* 7c. 转发给该账号下的查看端（课题要求 5 的后半段）
+         *     注意：这里传的是 conn->account_idx —— 连接就在手上，
+         *     读字段是 O(1)，不必再由 fd 反查账号表 */
+        viewer_broadcast(conn->account_idx, &hdr, jpeg);
 
         consumed += total_frame;
     }

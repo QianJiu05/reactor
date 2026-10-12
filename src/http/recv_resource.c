@@ -1,12 +1,20 @@
 /*
- *  服务器转发核心：把相机客户端的帧广播给所有查看端
+ *  服务器转发核心：把采集端的帧广播给【同一账号】下的查看端
  *
  *  数据流：
- *      相机 --(自定义协议帧)--> http_callback 解析
- *                                 ├── recorder_write_frame  落盘
- *                                 └── viewer_broadcast      转发
- *                                          └── 每个查看端 outbuf 里塞一段 MJPEG
- *                                                  再用 EPOLLOUT 事件发出去
+ *      采集端 --(自定义协议帧)--> http_callback 解析
+ *                                   ├── recorder_write_frame  落盘
+ *                                   └── viewer_broadcast      转发
+ *                                            └── 每个查看端 outbuf 里塞一段 MJPEG
+ *                                                    再用 EPOLLOUT 事件发出去
+ *
+ *  账号隔离与锁粒度：
+ *      查看端集合由 account 模块按账号维护，受 g_account_lock 保护。
+ *      转发是【每帧都要走】的热路径，因此这里严格遵循
+ *      「持锁取快照 → 放锁 → 逐个推送」：锁内只做一次 fd 拷贝，
+ *      数据搬运、磁盘 I/O、epoll 通知全在锁外。
+ *      代价是快照期间新加入的查看端会漏掉当前这一帧（下一帧就能收到），
+ *      视频流本来也不保证首帧必达，这个取舍可以接受。
  */
 
 #include <stdio.h>
@@ -26,93 +34,85 @@
 #include "account.h"
 #include "config.h"
 
-/* ===================== 查看端注册表 ===================== */
-
-#define MAX_VIEWERS  NUM_OF_CONNECTOR
-
-static int g_viewers[MAX_VIEWERS];   /* 存查看端 fd，-1 表示空槽 */
-static int g_viewers_inited;
-
-static void viewers_init(void)
-{
-    if (g_viewers_inited)
-        return;
-    for (int i = 0; i < MAX_VIEWERS; i++)
-        g_viewers[i] = -1;
-    g_viewers_inited = 1;
-}
+/* ===================== 查看端注册 ===================== */
 
 void viewer_register(struct connect* conn)
 {
-    viewers_init();
-
-    for (int i = 0; i < MAX_VIEWERS; i++) {
-        if (g_viewers[i] == conn->fd)
-            return;                     /* 已注册 */
-
-        if (g_viewers[i] < 0) {
-            g_viewers[i] = conn->fd;
-#ifdef DEBUG
-            printf("[viewer] 注册 fd=%d (当前 %d 个查看端)\n",
-                   conn->fd, viewer_count());
-#endif
-            return;
-        }
+    if (conn->account_idx < 0) {
+        fprintf(stderr, "[viewer] fd=%d 尚未归属账号，无法注册为查看端\n",
+                conn->fd);
+        return;
     }
-    fprintf(stderr, "[viewer] 查看端数量已达上限 %d，拒绝 fd=%d\n",
-            MAX_VIEWERS, conn->fd);
+
+    if (account_viewer_add(conn->account_idx, conn->fd) < 0) {
+        /* 上限已满：这里不关连接，让 http_handler 回 503 更麻烦，
+         * 直接断开并说明原因即可（账号模块已打印详细日志） */
+        fprintf(stderr, "[viewer] fd=%d 注册失败，连接将被关闭\n", conn->fd);
+        conn->close(conn);
+        return;
+    }
+
+#ifdef DEBUG
+    printf("[viewer] 注册 fd=%d 到账号 \"%s\"（该账号现有 %d 个查看端）\n",
+           conn->fd, account_name(conn->account_idx),
+           account_viewer_count(conn->account_idx));
+#endif
 }
 
 void viewer_unregister(struct connect* conn)
 {
-    viewers_init();
+    if (conn->account_idx < 0)
+        return;
 
-    for (int i = 0; i < MAX_VIEWERS; i++) {
-        if (g_viewers[i] == conn->fd) {
-            g_viewers[i] = -1;
+    account_viewer_remove(conn->fd);
+
 #ifdef DEBUG
-            printf("[viewer] 注销 fd=%d (剩余 %d 个查看端)\n",
-                   conn->fd, viewer_count());
+    printf("[viewer] 注销 fd=%d（账号 \"%s\" 剩余 %d 个查看端）\n",
+           conn->fd, account_name(conn->account_idx),
+           account_viewer_count(conn->account_idx));
 #endif
-            return;
-        }
-    }
 }
 
 int viewer_count(void)
 {
-    int n = 0;
-    for (int i = 0; i < MAX_VIEWERS; i++) {
-        if (g_viewers[i] >= 0)
-            n++;
-    }
-    return n;
+    /* 所有账号的查看端总数，仅用于状态展示 */
+    int total = 0;
+
+    for (int i = 0; i < MAX_ACCOUNTS; i++)
+        total += account_viewer_count(i);
+
+    return total;
 }
 
 /* ===================== 转发 ===================== */
 
 /*
  * 把一帧包成 MJPEG 分段塞进某个查看端的 outbuf。
- * 采用「尽量塞满、塞不下就丢」的策略：
- * 查看端网络慢时不能反压相机链路，直播场景下丢帧比卡顿更可接受。
+ *
+ * 采用「塞得下就写、塞不下就丢」：
+ * 查看端网络慢时不能反压采集链路，直播场景下丢帧比整体卡顿更可接受。
  */
 static void push_frame_to_viewer(int fd, const uint8_t* jpeg, uint32_t jpeg_len)
 {
     struct connect* dest = get_connector(fd);
+    char head[128];
+    int  head_len;
+    int  need;
+    int  space;
+
     if (dest == NULL || dest->state != STATE_USING || dest->fd != fd)
         return;
 
-    char head[128];
-    int head_len = snprintf(head, sizeof(head),
-                            "--frame\r\n"
-                            "Content-Type: image/jpeg\r\n"
-                            "Content-Length: %u\r\n\r\n",
-                            jpeg_len);
+    head_len = snprintf(head, sizeof(head),
+                        "--frame\r\n"
+                        "Content-Type: image/jpeg\r\n"
+                        "Content-Length: %u\r\n\r\n",
+                        jpeg_len);
     if (head_len <= 0)
         return;
 
-    int need = head_len + (int)jpeg_len + 2;      /* +2 是结尾的 \r\n */
-    int space = CONNECT_BUF_LEN - dest->outlen;
+    need  = head_len + (int)jpeg_len + 2;      /* +2 是结尾的 \r\n */
+    space = CONNECT_BUF_LEN - dest->outlen;
 
     if (need > space) {
 #ifdef DEBUG
@@ -131,28 +131,45 @@ static void push_frame_to_viewer(int fd, const uint8_t* jpeg, uint32_t jpeg_len)
     memcpy(dest->outbuf + dest->outlen, "\r\n", 2);
     dest->outlen += 2;
 
-    /* 通知该查看端所在的 reactor 可以发数据了 */
+    /* 通知该查看端所在的 reactor 可以发数据了。
+     * 查看端可能不在当前线程的 reactor 上，epoll_ctl 对 epoll 实例
+     * 是线程安全的，所以这里跨线程调用是允许的。 */
     set_epoll(dest->sub, EPOLLOUT, EPOLL_CTL_MOD, fd);
 }
 
-void viewer_broadcast(const struct frame_header* hdr, const uint8_t* jpeg)
+/*
+ * 把一帧广播给【指定账号】下的所有查看端。
+ *
+ * idx 由调用方（handle_camera_frame）从 conn->account_idx 直接取得，
+ * 不必由 fd 反查 —— 那条连接就在我们手上，读它的字段是 O(1)。
+ */
+void viewer_broadcast(int account_idx, const struct frame_header* hdr,
+                      const uint8_t* jpeg)
 {
-    viewers_init();
+    int fds[MAX_VIEWERS_PER];
+    int n;
 
-    if (viewer_count() == 0)
-        return;                 /* 没有查看端，只落盘即可 */
+    if (hdr == NULL || jpeg == NULL || hdr->jpeg_len == 0)
+        return;
+    if (account_idx < 0)
+        return;
+
+    /* ---- 持锁取快照，随即放锁 ---- */
+    n = account_viewer_snapshot(account_idx, fds, MAX_VIEWERS_PER);
+    if (n <= 0)
+        return;                     /* 该账号暂时没有查看端，只落盘即可 */
 
 #ifdef DEBUG
-    /* PIR 命中的帧单独提示，便于演示「人体感应」联动 */
     if (hdr->pir)
-        printf("[viewer] 人体感应帧 seq=%u，转发给 %d 个查看端\n",
-               hdr->seq, viewer_count());
+        printf("[viewer] 账号 \"%s\" 人体感应帧 seq=%u，转发给 %d 个查看端\n",
+               account_name(account_idx), hdr->seq, n);
 #endif
 
-    for (int i = 0; i < MAX_VIEWERS; i++) {
-        if (g_viewers[i] >= 0)
-            push_frame_to_viewer(g_viewers[i], jpeg, hdr->jpeg_len);
-    }
+    /* ---- 锁外逐个推送 ---- */
+    for (int i = 0; i < n; i++)
+        push_frame_to_viewer(fds[i], jpeg, hdr->jpeg_len);
+
+    account_add_frames_out(account_idx, (unsigned long)n);
 }
 
 /* ===================== 采集端握手 ===================== */

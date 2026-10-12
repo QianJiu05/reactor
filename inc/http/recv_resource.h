@@ -29,10 +29,11 @@ int handle_resource(struct connect* conn);
 void viewer_register(struct connect* conn);
 void viewer_unregister(struct connect* conn);
 
-/* 把一帧打包成 MJPEG 分段，广播给【该账号】下的所有查看端 */
-void viewer_broadcast(const struct frame_header* hdr, const uint8_t* jpeg);
+/* 把一帧打包成 MJPEG 分段，广播给【指定账号】下的所有查看端 */
+void viewer_broadcast(int account_idx, const struct frame_header* hdr,
+                      const uint8_t* jpeg);
 
-/* 当前查看端数量 */
+/* 当前所有账号的查看端总数（仅用于状态展示） */
 int  viewer_count(void);
 
 #endif

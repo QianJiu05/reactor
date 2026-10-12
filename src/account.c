@@ -368,6 +368,16 @@ void account_viewer_remove(int fd)
         return;
 
     pthread_mutex_lock(&g_account_lock);
+
+    /*
+     * 摘掉【所有】账号里该 fd 的记录，而不只是第一个匹配。
+     *
+     * 正常情况下一个 fd 只会出现在一个账号的列表里（fd 在系统内唯一），
+     * 但如果因为某个 bug 留下了重复登记，只摘第一个会让残留的槽位
+     * 一直指向一个已关闭的 fd —— 而 push_frame_to_viewer() 恰好会
+     * 跳过 state != STATE_USING 的目标，于是这个错误会被静默掩盖。
+     * 与其留个隐患，不如一次清干净。
+     */
     for (int i = 0; i < MAX_ACCOUNTS; i++) {
         struct account *a = &g_accounts[i];
         if (!a->used)
@@ -378,11 +388,10 @@ void account_viewer_remove(int fd)
                 a->viewers[j] = -1;
                 if (a->viewer_count > 0)
                     a->viewer_count--;
-                goto out;
             }
         }
     }
-out:
+
     pthread_mutex_unlock(&g_account_lock);
 }
 
