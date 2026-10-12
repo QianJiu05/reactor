@@ -57,3 +57,9 @@
 #define USING_WAITING_IMG   1
 #define WAITING_IMG         "./waiting.jpg"    /* 占位图路径，缺失时自动降级 */
 #define VIEWER_IDLE_FPS     1                  /* 等待期的占位图帧率 */
+
+/*
+ * 关于 GET / （未指定账号）的提示页：
+ * 当前实现固定回 503 + 「请指定账号」提示，**不列出**可用账号目录 ——
+ * 列出来等于任何人打开首页就知道所有通道名。
+ */
