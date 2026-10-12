@@ -28,7 +28,7 @@
 #include "utils.h"
 
 struct account {
-    char     name[ACCOUNT_NAME_MAX];
+    char     name[ACCOUNT_NAME_LEN];
     char     password[64];                /* 预留：本期不校验 */
     int      used;
 
@@ -67,37 +67,9 @@ static char *trim(char *s)
     return s;
 }
 
-/* ===================== 账号名合法性 ===================== */
-
-int account_name_valid(const char *name)
-{
-    size_t len;
-
-    if (name == NULL)
-        return -1;
-
-    len = strlen(name);
-    if (len == 0 || len >= ACCOUNT_NAME_MAX)
-        return -1;
-
-    for (size_t i = 0; i < len; i++) {
-        char c = name[i];
-        int ok = (c >= 'a' && c <= 'z') ||
-                 (c >= 'A' && c <= 'Z') ||
-                 (c >= '0' && c <= '9') ||
-                 (c == '_');
-        if (!ok)
-            return -1;
-    }
-
-    /* 保留字：即使字符集允许（当前 . 已被上面的字符集挡掉），
-     * 也显式声明一下 —— 浏览器会自动请求 /favicon.ico，
-     * 若把它当成账号名，那条请求会被当成"要看视频流"而挂住 */
-    if (strcmp(name, "favicon.ico") == 0)
-        return -1;
-
-    return 0;
-}
+/* ===================== 账号名合法性 =====================
+ * account_name_valid() 是 static inline，定义在 inc/account_name.h，
+ * 与握手解析、URL 路径解析共用同一份实现。这里不再重复定义。 */
 
 /* ===================== 加载配置 ===================== */
 

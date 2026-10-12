@@ -20,12 +20,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "account_name.h"   /* account_name_valid() */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* 账号名最大长度（不含结尾 '\0'） */
-#define ACCOUNT_NAME_MAX   32
 
 /* account_cam_bind() 的返回值 */
 #define ACCOUNT_BIND_OK    0
@@ -33,19 +32,11 @@ extern "C" {
 #define ACCOUNT_BIND_FAIL  2
 
 /*
- * 加载账号表。dir 为 NULL 时使用 config.h 的 ACCOUNT_FILE。
+ * 加载账号表。file 为 NULL 时使用 config.h 的 ACCOUNT_FILE。
  * 返回成功加载的账号数量；配置文件打不开返回 -1（服务器仍可启动，
  * 但所有采集端握手都会失败、所有查看端路径都会 404）。
  */
 int account_init(const char *file);
-
-/*
- * 账号名合法性：^[A-Za-z0-9_]{1,31}$ 且不等于保留字 favicon.ico。
- * 返回 0 合法，-1 非法。
- *
- * 必须在三处调用并保持一致：配置加载、采集端握手、查看端路径解析。
- */
-int account_name_valid(const char *name);
 
 /* 由账号名查下标，找不到返回 -1 */
 int account_lookup(const char *name);

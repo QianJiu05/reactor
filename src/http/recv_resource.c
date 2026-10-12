@@ -18,10 +18,12 @@
 
 #include "recv_resource.h"
 #include "http_handler.h"
+#include "http_parse.h"
 #include "reactor.h"
 #include "connect_pool.h"
 #include "epoll.h"
 #include "protocol.h"
+#include "account.h"
 #include "config.h"
 
 /* ===================== 查看端注册表 ===================== */
@@ -153,16 +155,85 @@ void viewer_broadcast(const struct frame_header* hdr, const uint8_t* jpeg)
     }
 }
 
-/* ===================== 相机客户端握手 ===================== */
+/* ===================== 采集端握手 ===================== */
+
+/*
+ * 往 outbuf 写一行回应并立刻发出去。
+ *
+ * 为什么直接 send() 而不等 EPOLLOUT：
+ * 回应只有几个字节，而连接刚建立、发送缓冲区一定是空的，
+ * 同步发出去最简单，也让采集端能立刻拿到结果。发不出去（EAGAIN）
+ * 就交给 epoll 后续处理，不影响正确性。
+ */
+static void send_handshake_reply(struct connect* conn, const char *line)
+{
+    int len = (int)strlen(line);
+    int n;
+
+    n = send(conn->fd, line, len, 0);
+    if (n == len)
+        return;
+
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        /* 发送缓冲满：把剩下的排进 outbuf，由 EPOLLOUT 补发 */
+        memcpy(conn->outbuf, line, len);
+        conn->outlen = len;
+        set_epoll(conn->sub, EPOLLOUT, EPOLL_CTL_MOD, conn->fd);
+        return;
+    }
+
+    fprintf(stderr, "fd:%d 发送握手回应失败: %s\n", conn->fd, strerror(errno));
+}
 
 int handle_resource(struct connect* conn)
 {
-    /* 格式: "CAM\r\n" —— 声明本连接是相机客户端 */
-    if (strncmp(conn->inbuf, PROTO_CMD_CAM, strlen(PROTO_CMD_CAM)) != 0) {
-        printf("[cam] 非法握手报文 fd=%d\n", conn->fd);
+    char name[ACCOUNT_NAME_LEN];
+    int  idx;
+    int  rc;
+    int  stale_fd = -1;
+
+    /* 格式: "CAM <account>\r\n"；解析逻辑见 inc/http/http_parse.h */
+    if (!http_parse_cam_account(conn->inbuf, name, sizeof(name))) {
+        printf("[cam] fd=%d 握手报文缺少账号名或前缀不匹配\n", conn->fd);
+        send_handshake_reply(conn, "ERR AUTH\r\n");
         return -1;
     }
 
+    if (account_name_valid(name) != 0) {
+        printf("[cam] fd=%d 账号名非法: \"%s\"\n", conn->fd, name);
+        send_handshake_reply(conn, "ERR AUTH\r\n");
+        return -1;
+    }
+
+    idx = account_lookup(name);
+    if (idx < 0) {
+        printf("[cam] fd=%d 账号不存在: \"%s\"\n", conn->fd, name);
+        send_handshake_reply(conn, "ERR AUTH\r\n");
+        return -1;
+    }
+
+    rc = account_cam_bind(idx, conn->fd, &stale_fd);
+    if (rc == ACCOUNT_BIND_BUSY) {
+        printf("[cam] fd=%d 账号 \"%s\" 已被占用\n", conn->fd, name);
+        send_handshake_reply(conn, "ERR BUSY\r\n");
+        return -1;
+    }
+    if (rc != ACCOUNT_BIND_OK) {
+        printf("[cam] fd=%d 绑定账号 \"%s\" 失败\n", conn->fd, name);
+        send_handshake_reply(conn, "ERR AUTH\r\n");
+        return -1;
+    }
+
+    /* 顶替僵死连接：这里只负责关闭旧连接，账号已经指向新 fd */
+    if (stale_fd >= 0) {
+        struct connect *old = get_connector(stale_fd);
+        if (old != NULL && old->state == STATE_USING && old->fd == stale_fd) {
+            printf("[cam] 关闭僵死的旧采集端 fd=%d\n", stale_fd);
+            old->close(old);
+        }
+    }
+
+    conn->account_idx        = idx;
     conn->app.cam.dest       = conn->fd;
     conn->app.cam.last_seq   = 0;
     conn->app.cam.seq_inited = 0;
@@ -171,6 +242,8 @@ int handle_resource(struct connect* conn)
      * 这里【不要】再清空 inbuf —— 对端可能把握手行和第一帧放在同一个
      * send() 里发出，清空会把那一帧丢掉（设计文档 D7）。 */
 
-    printf("[cam] 相机客户端接入: fd=%d\n", conn->fd);
+    send_handshake_reply(conn, "OK\r\n");
+
+    printf("[cam] 采集端接入: fd=%d 账号 \"%s\"\n", conn->fd, name);
     return 0;
 }
