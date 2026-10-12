@@ -40,8 +40,6 @@
 
 int g_server_port = SERVER_PORT;
 
-static int sem_wait_timeout(sem_t *sem, int timeout_ms);
-
 static struct reactor main_reactor;
 static struct epoll_event main_ev;
 
@@ -85,9 +83,10 @@ int main (int argc, char **argv) {
 
     sem_init(&sub_init, 0, 0);
 
-    /* 创建子线程运行 sub reactor */
+    /* 创建子线程运行 sub reactor。
+     * init_sub_reactor() 返回时保证所有 sub->epfd 已就绪，
+     * 因此后续可以安全地跨线程调用 set_epoll()。 */
     init_sub_reactor();
-    sem_wait_timeout(&sub_init, 500);
 
     /* 开始监听 */
     if (listen(serverfd, BACKLOG) == -1) {
@@ -96,8 +95,15 @@ int main (int argc, char **argv) {
     }
 
     main_reactor.epfd = epoll_create(1);
+    if (main_reactor.epfd < 0) {
+        perror("epoll_create");
+        return 1;
+    }
     /* 主线程只监听输入：新事件 */
-    set_epoll(&main_reactor, EPOLLIN, EPOLL_CTL_ADD, serverfd);
+    if (set_epoll(&main_reactor, EPOLLIN, EPOLL_CTL_ADD, serverfd) < 0) {
+        fprintf(stderr, "无法把 listen fd 注册到 epoll\n");
+        return 1;
+    }
     printf("服务器已就绪，等待连接...\n");
 
     while (1)
@@ -127,18 +133,4 @@ int main (int argc, char **argv) {
 
     close(serverfd);
     return 0;
-}
-
-/* 等待指定毫秒，成功返回0，超时返回-1 */
-static int sem_wait_timeout(sem_t *sem, int timeout_ms) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += timeout_ms / 1000;
-    ts.tv_nsec += (timeout_ms % 1000) * 1000000;
-    // 处理进位
-    if (ts.tv_nsec >= 1000000000) {
-        ts.tv_sec++;
-        ts.tv_nsec -= 1000000000;
-    }
-    return sem_timedwait(sem, &ts);
 }

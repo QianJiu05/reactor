@@ -16,10 +16,10 @@
 #include "config.h"
 #include "connect_pool.h"
 #include "reactor.h"
+#include "callback.h"
 #include "http_handler.h"
 #include "recv_resource.h"
 #include "server_init.h"
-#include "config.h"
 #include "epoll.h"
 
 extern sem_t sub_init;
@@ -32,14 +32,27 @@ static int g_next_reactor;      /* 轮询分配用的下标 */
 
 void* func_reactor (void* arg) {
     struct reactor* sub = (struct reactor*) arg;
-    // struct epoll_event *events = sub->events;
     struct epoll_event *events = malloc(sizeof(struct epoll_event)* MAX_EVENTS);
     if (events == NULL) {
         printf("reactor %ld: malloc events failed\n", (long)sub->tid);
+        sem_post(&sub_init);        /* 也要放行，否则 init_sub_reactor 会一直等 */
         return NULL;
     }
 
     sub->epfd = epoll_create(1);
+    if (sub->epfd < 0) {
+        perror("epoll_create");
+        free(events);
+        sem_post(&sub_init);
+        return NULL;
+    }
+
+    /*
+     * epfd 建好之后才能发信号。
+     * main() 里 init_sub_reactor() 会等满 NUM_OF_REACTOR 次，
+     * 因此它返回时所有 sub->epfd 一定可用 —— 这是跨线程 set_epoll() 的前提。
+     */
+    sem_post(&sub_init);
 
     while (1)
     {
@@ -78,15 +91,27 @@ void init_sub_reactor(void) {
     memset(sub_reactor, 0, sizeof sub_reactor);
     for (int i = 0; i < NUM_OF_REACTOR; i++) {
         struct reactor* sub =  &sub_reactor[i];
+        sub->epfd = -1;
         if (0 != pthread_create(&sub->tid, NULL, func_reactor, sub)) {
             printf("thread create failed\n");
-            // return false;   
             exit(-1);
         }
     }
-    // printf("finish\n");
-    sem_post(&sub_init);
-    // return true;
+
+    /*
+     * 等满 NUM_OF_REACTOR 次「epfd 已就绪」信号再返回。
+     * 原来是创建完线程就直接 sem_post，main() 又只等一次，
+     * 于是返回时 epfd 可能还是 0，后续 epoll_ctl 会静默失败。
+     */
+    for (int i = 0; i < NUM_OF_REACTOR; i++)
+        sem_wait(&sub_init);
+
+    for (int i = 0; i < NUM_OF_REACTOR; i++) {
+        if (sub_reactor[i].epfd < 0) {
+            printf("sub reactor %d 初始化失败\n", i);
+            exit(-1);
+        }
+    }
 }
 
 
@@ -107,5 +132,6 @@ void patch_connect(struct reactor* target, int fd) {
     }
     connect_init(connector, fd);
     connector->sub = target;
-    set_epoll(target, EPOLLIN, EPOLL_CTL_ADD, fd);
+    if (set_epoll(target, EPOLLIN, EPOLL_CTL_ADD, fd) < 0)
+        close_callback(connector);      /* 注册失败就别留着这条连接 */
 }
