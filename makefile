@@ -25,12 +25,14 @@ SRC_FILES := example/main.c \
              src/recv.c \
              src/callback.c \
              src/recorder.c \
+             src/account.c \
              src/http/http_handler.c \
              src/http/recv_resource.c
 
 HEADERS := config.h \
            inc/protocol.h \
            inc/recorder.h \
+           inc/account.h \
            inc/connect_pool.h \
            inc/reactor.h \
            inc/server_init.h \

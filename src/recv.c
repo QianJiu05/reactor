@@ -13,6 +13,7 @@
 #include "http_handler.h"
 #include "recv.h"
 #include "protocol.h"
+#include "config.h"
 
 /* ===================== 首行解析 ===================== */
 

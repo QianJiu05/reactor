@@ -24,8 +24,7 @@ enum conn_phase {
     PHASE_CLOSED
 };
 
-/* 首行最大长度：超过仍未出现 \r\n 判定为非法，防止慢速攻击占用缓冲 */
-#define MAX_HANDSHAKE_LEN  128
+/* 首行最大长度 MAX_HANDSHAKE_LEN 定义在 config.h */
 
 int recv_callback(struct connect* conn);
 
